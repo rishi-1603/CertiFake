@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CertiFake Pro</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+  <div class="bg-grid"></div>
+  <div class="ambient ambient-1"></div>
+  <div class="ambient ambient-2"></div>
+
+  <main class="shell">
+    <section class="hero card">
+      <div>
+        <div class="badge">AI Certificate Intelligence</div>
+        <h1>CertiFake Pro</h1>
+        <p class="subtitle">Fast authenticity scoring, OCR extraction, tamper signals, and clean report output.</p>
+        <div class="hero-stats">
+          <div><span>Score</span><strong id="statScore">--</strong></div>
+          <div><span>Verdict</span><strong id="statVerdict">Idle</strong></div>
+          <div><span>Confidence</span><strong id="statConfidence">--</strong></div>
+        </div>
+      </div>
+      <div class="ring-wrap">
+        <svg viewBox="0 0 120 120" class="ring">
+          <circle cx="60" cy="60" r="52" class="ring-track"></circle>
+          <circle cx="60" cy="60" r="52" class="ring-fill" id="ringFill"></circle>
+        </svg>
+        <div class="ring-text">
+          <span id="ringValue">--</span>
+          <small>Authenticity</small>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card panel">
+        <h2>Login</h2>
+        <div class="row">
+          <input id="username" placeholder="admin" value="admin" />
+          <input id="password" type="password" placeholder="password" />
+          <button id="loginBtn" class="btn btn-secondary">Get Token</button>
+        </div>
+        <div class="token-box">
+          <span>Token</span>
+          <code id="tokenStatus">No token yet</code>
+        </div>
+      </div>
+
+      <div class="card panel">
+        <h2>Upload</h2>
+        <div id="dropzone" class="dropzone">
+          <input id="fileInput" type="file" accept="image/*,application/pdf" hidden />
+          <div>
+            <strong>Drop certificate here</strong>
+            <p>or click to browse JPG, PNG, WEBP, or PDF</p>
+          </div>
+        </div>
+        <div class="row row-end">
+          <div id="fileName" class="muted">No file selected</div>
+          <button id="analyzeBtn" class="btn">Analyze</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid two-col">
+      <div class="card panel result-card">
+        <h2>Result</h2>
+        <div id="verdictPill" class="pill idle">Waiting</div>
+        <div class="score-row">
+          <div>
+            <span>Authenticity score</span>
+            <strong id="scoreText">--</strong>
+          </div>
+          <div>
+            <span>Confidence</span>
+            <strong id="confidenceText">--</strong>
+          </div>
+        </div>
+        <div class="result-copy" id="resultCopy">Upload a certificate to begin analysis.</div>
+        <div class="preview-wrap" id="previewWrap" hidden>
+          <img id="previewImage" alt="Analysis preview" />
+        </div>
+        <a id="reportLink" class="btn btn-secondary hidden" href="#" target="_blank">Download report</a>
+      </div>
+
+      <div class="card panel evidence-card">
+        <h2>Evidence</h2>
+        <div class="evidence-list">
+          <div><span>File</span><strong id="eFile">--</strong></div>
+          <div><span>Type</span><strong id="eType">--</strong></div>
+          <div><span>Signals</span><strong id="eSignals">--</strong></div>
+        </div>
+        <details open>
+          <summary>Extracted fields</summary>
+          <pre id="fieldsBox">{}</pre>
+        </details>
+        <details>
+          <summary>OCR text</summary>
+          <pre id="ocrBox">No OCR yet</pre>
+        </details>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
