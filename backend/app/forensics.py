@@ -34,6 +34,7 @@ def ela_map_from_path(path: str):
     if not CV_AVAILABLE:
         return 0.0, None
     img = Image.open(path).convert("RGB")
+    img.thumbnail((800, 800), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=90)
     buf.seek(0)
@@ -54,11 +55,17 @@ def score_document(path: str, ocr_text: str, content_type: str):
     if img is None:
         return _fallback_score(ocr_text, content_type)
         
+    # Resize for massive speedup
+    h, w = img.shape[:2]
+    if max(h, w) > 800:
+        scale = 800.0 / max(h, w)
+        img = cv2.resize(img, (int(w * scale), int(h * scale)))
+        
     signals = []
     score = 50.0
     
     h, w = img.shape[:2]
-    if h < 600 or w < 600:
+    if h < 300 or w < 300:
         score -= 10
         signals.append("Low-resolution upload")
         

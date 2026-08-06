@@ -17,7 +17,7 @@ if os.name == 'nt':
 def _preprocess_image(img: Image.Image) -> Image.Image:
     img = img.convert("L")
     img = ImageOps.autocontrast(img)
-    img = img.filter(ImageFilter.MedianFilter(size=3))
+    # Removed MedianFilter for performance
     return img
 
 def _ocr_image(img: Image.Image) -> str:
@@ -27,13 +27,15 @@ def _ocr_image(img: Image.Image) -> str:
 def run_ocr(path: str, content_type: str) -> str:
     p = Path(path)
     if content_type == "application/pdf" and PDF_AVAILABLE:
-        pages = convert_from_path(str(p), dpi=220)
-        texts = []
-        for page in pages[:3]:
-            texts.append(_ocr_image(_preprocess_image(page)))
-        return "\n".join(texts).strip()
+        # Reduced to 150 DPI and only first page for much faster processing
+        pages = convert_from_path(str(p), dpi=150)
+        if pages:
+            return _ocr_image(_preprocess_image(pages[0])).strip()
+        return ""
     else:
         img = Image.open(str(p))
+        # Resize image if it's too large to speed up OCR
+        img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
         return _ocr_image(_preprocess_image(img)).strip()
 
 def extract_fields(text: str):
