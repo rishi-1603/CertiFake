@@ -39,19 +39,10 @@ def health():
         "opencv_available": CV_AVAILABLE
     }
 
-@app.post("/auth/login", response_model=TokenResponse)
-def auth_login(payload: LoginRequest):
-    token = login(payload.username, payload.password)
-    return {"access_token": token, "token_type": "bearer"}
 
-@app.post("/auth/signup", response_model=TokenResponse)
-def auth_signup(payload: LoginRequest):
-    from app.auth import signup
-    token = signup(payload.username, payload.password)
-    return {"access_token": token, "token_type": "bearer"}
 
 @app.post("/analyze", response_model=AnalyzeResponse)
-async def analyze(file: UploadFile = File(...), user=Depends(require_user)):
+async def analyze(file: UploadFile = File(...)):
     if not allowed_mime(file.content_type):
         raise HTTPException(status_code=400, detail="Unsupported file type")
         
@@ -89,7 +80,7 @@ async def analyze(file: UploadFile = File(...), user=Depends(require_user)):
         
         create_report(str(report_path), {
             "file_name": file.filename,
-            "user": user,
+            "user": "guest",
             "authenticity_score": score,
             "verdict": verdict,
             "signals": ", ".join(signals) or "None",
@@ -117,7 +108,7 @@ async def analyze(file: UploadFile = File(...), user=Depends(require_user)):
             pass
 
 @app.get("/report/{report_id}")
-def get_report(report_id: str, user=Depends(require_user)):
+def get_report(report_id: str):
     report_path = REPORTS_DIR / f"{report_id}.pdf"
     if not report_path.exists():
         raise HTTPException(status_code=404, detail="Report not found")

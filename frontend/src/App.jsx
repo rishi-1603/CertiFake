@@ -4,40 +4,15 @@ import './index.css'
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
 
 function App() {
-  const [token, setToken] = useState('')
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [isSignup, setIsSignup] = useState(false)
-  
   const [file, setFile] = useState(null)
   const [isDragActive, setIsDragActive] = useState(false)
-  
   const [analyzing, setAnalyzing] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
-  
   const fileInputRef = useRef(null)
-
-  const handleAuth = async () => {
-    try {
-      const endpoint = isSignup ? '/auth/signup' : '/auth/login'
-      const res = await fetch(`${API_URL}${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Authentication failed')
-      setToken(data.access_token)
-      setError('')
-    } catch (err) {
-      setError(err.message)
-    }
-  }
 
   const handleAnalyze = async () => {
     if (!file) return setError('Choose a certificate file first')
-    if (!token) return setError('Login first and get a token')
       
     setAnalyzing(true)
     setError('')
@@ -49,7 +24,6 @@ function App() {
     try {
       const res = await fetch(`${API_URL}/analyze`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` },
         body: formData
       })
       const data = await res.json()
@@ -121,32 +95,7 @@ function App() {
         <section className="grid two-col">
           {/* Left Column */}
           <div className="grid">
-            <div className="card panel">
-              <h2>Authentication</h2>
-              {!token ? (
-                <>
-                  <input 
-                    placeholder="Username" 
-                    value={username} 
-                    onChange={e => setUsername(e.target.value)} 
-                  />
-                  <input 
-                    type="password" 
-                    placeholder="Password" 
-                    value={password} 
-                    onChange={e => setPassword(e.target.value)} 
-                  />
-                  <div style={{display: 'flex', gap: '8px', marginTop: '16px'}}>
-                    <button className="btn" onClick={handleAuth}>{isSignup ? 'Sign Up' : 'Login'}</button>
-                    <button className="btn" style={{background: 'transparent', border: '1px solid var(--border)'}} onClick={() => setIsSignup(!isSignup)}>
-                      {isSignup ? 'Switch to Login' : 'Create Account'}
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <div className="pill good">Authenticated</div>
-              )}
-            </div>
+            {/* Authentication panel removed */}
 
             <div className="card panel">
               <h2>Upload Document</h2>
@@ -178,7 +127,7 @@ function App() {
               <button 
                 className="btn mt-4" 
                 onClick={handleAnalyze} 
-                disabled={!file || analyzing || !token}
+                disabled={!file || analyzing}
               >
                 {analyzing ? 'Analyzing...' : 'Analyze Document'}
               </button>
