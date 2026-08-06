@@ -5,8 +5,9 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
 
 function App() {
   const [token, setToken] = useState('')
-  const [username, setUsername] = useState('admin')
-  const [password, setPassword] = useState('password')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [isSignup, setIsSignup] = useState(false)
   
   const [file, setFile] = useState(null)
   const [isDragActive, setIsDragActive] = useState(false)
@@ -17,15 +18,16 @@ function App() {
   
   const fileInputRef = useRef(null)
 
-  const handleLogin = async () => {
+  const handleAuth = async () => {
     try {
-      const res = await fetch(`${API_URL}/auth/login`, {
+      const endpoint = isSignup ? '/auth/signup' : '/auth/login'
+      const res = await fetch(`${API_URL}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password })
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Login failed')
+      if (!res.ok) throw new Error(data.detail || 'Authentication failed')
       setToken(data.access_token)
       setError('')
     } catch (err) {
@@ -134,7 +136,12 @@ function App() {
                     value={password} 
                     onChange={e => setPassword(e.target.value)} 
                   />
-                  <button className="btn" onClick={handleLogin}>Get Token</button>
+                  <div style={{display: 'flex', gap: '8px', marginTop: '16px'}}>
+                    <button className="btn" onClick={handleAuth}>{isSignup ? 'Sign Up' : 'Login'}</button>
+                    <button className="btn" style={{background: 'transparent', border: '1px solid var(--border)'}} onClick={() => setIsSignup(!isSignup)}>
+                      {isSignup ? 'Switch to Login' : 'Create Account'}
+                    </button>
+                  </div>
                 </>
               ) : (
                 <div className="pill good">Authenticated</div>

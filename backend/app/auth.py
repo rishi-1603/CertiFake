@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
 from fastapi import HTTPException, Depends
@@ -5,11 +7,42 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.config import settings
 
 security = HTTPBearer(auto_error=False)
+USERS_FILE = Path("data/users.json")
+
+def load_users():
+    if not USERS_FILE.exists():
+        # Initialize with admin user if file doesn't exist
+        users = {settings.admin_username: settings.admin_password}
+        USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        save_users(users)
+        return users
+    try:
+        with open(USERS_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {settings.admin_username: settings.admin_password}
+
+def save_users(users):
+    with open(USERS_FILE, "w") as f:
+        json.dump(users, f)
+
+def signup(username: str, password: str) -> str:
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Username and password required")
+    users = load_users()
+    if username in users:
+        raise HTTPException(status_code=400, detail="Username already exists")
+    users[username] = password
+    save_users(users)
+    return generate_token(username)
 
 def login(username: str, password: str) -> str:
-    if username != settings.admin_username or password != settings.admin_password:
+    users = load_users()
+    if users.get(username) != password:
         raise HTTPException(status_code=401, detail="Invalid username or password")
+    return generate_token(username)
     
+def generate_token(username: str) -> str:
     payload = {
         "sub": username,
         "exp": datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)

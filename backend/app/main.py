@@ -18,7 +18,7 @@ app = FastAPI(title=settings.app_name)
 origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins or ["*"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -42,6 +42,12 @@ def health():
 @app.post("/auth/login", response_model=TokenResponse)
 def auth_login(payload: LoginRequest):
     token = login(payload.username, payload.password)
+    return {"access_token": token, "token_type": "bearer"}
+
+@app.post("/auth/signup", response_model=TokenResponse)
+def auth_signup(payload: LoginRequest):
+    from app.auth import signup
+    token = signup(payload.username, payload.password)
     return {"access_token": token, "token_type": "bearer"}
 
 @app.post("/analyze", response_model=AnalyzeResponse)
