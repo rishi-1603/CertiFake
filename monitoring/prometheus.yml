@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'api-gateway'
+    static_configs:
+      - targets: ['api-gateway:8000']
+        
+  - job_name: 'workers'
+    static_configs:
+      - targets: ['worker-ocr:8000', 'worker-forensics:8000']

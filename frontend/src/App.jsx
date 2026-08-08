@@ -28,12 +28,34 @@ function App() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Analysis failed')
-      setResult(data)
+      
+      const analysisId = data.analysis_id
+      
+      const poll = setInterval(async () => {
+        try {
+          const statusRes = await fetch(`${API_URL}/status/${analysisId}`)
+          const statusData = await statusRes.json()
+          
+          if (statusData.status === 'completed') {
+            clearInterval(poll)
+            setResult(statusData)
+            setAnalyzing(false)
+          } else if (statusData.status === 'failed') {
+            clearInterval(poll)
+            setError('Analysis failed during distributed processing')
+            setAnalyzing(false)
+          }
+        } catch (e) {
+          clearInterval(poll)
+          setError(e.message)
+          setAnalyzing(false)
+        }
+      }, 2000)
+      
     } catch (err) {
       setError(err.message)
-    } finally {
       setAnalyzing(false)
-    }
+    } 
   }
 
   const handleFileChange = (e) => {
