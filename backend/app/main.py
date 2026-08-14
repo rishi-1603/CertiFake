@@ -1,3 +1,6 @@
+# NOTE: This is a standalone, lightweight demo entrypoint.
+# For the full distributed architecture, run `app.api:app` with Docker Compose.
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,7 +38,6 @@ def health():
     return {
         "status": "ok",
         "app": settings.app_name,
-        "python_compat": "3.14",
         "opencv_available": CV_AVAILABLE
     }
 
@@ -86,7 +88,6 @@ async def analyze(file: UploadFile = File(...)):
             "signals": ", ".join(signals) or "None",
             "ocr_preview": ocr_text[:1500],
             "fields": extracted,
-            "python_compat": "3.14",
         })
         
         return {

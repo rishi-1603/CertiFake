@@ -4,15 +4,18 @@ from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
 from fastapi import HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from passlib.context import CryptContext
 from app.config import settings
 
 security = HTTPBearer(auto_error=False)
 USERS_FILE = Path("data/users.json")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def load_users():
     if not USERS_FILE.exists():
         # Initialize with admin user if file doesn't exist
-        users = {settings.admin_username: settings.admin_password}
+        hashed_pw = pwd_context.hash(settings.admin_password)
+        users = {settings.admin_username: hashed_pw}
         USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
         save_users(users)
         return users
@@ -20,7 +23,8 @@ def load_users():
         with open(USERS_FILE, "r") as f:
             return json.load(f)
     except:
-        return {settings.admin_username: settings.admin_password}
+        hashed_pw = pwd_context.hash(settings.admin_password)
+        return {settings.admin_username: hashed_pw}
 
 def save_users(users):
     with open(USERS_FILE, "w") as f:
@@ -32,13 +36,14 @@ def signup(username: str, password: str) -> str:
     users = load_users()
     if username in users:
         raise HTTPException(status_code=400, detail="Username already exists")
-    users[username] = password
+    users[username] = pwd_context.hash(password)
     save_users(users)
     return generate_token(username)
 
 def login(username: str, password: str) -> str:
     users = load_users()
-    if users.get(username) != password:
+    hashed_password = users.get(username)
+    if not hashed_password or not pwd_context.verify(password, hashed_password):
         raise HTTPException(status_code=401, detail="Invalid username or password")
     return generate_token(username)
     

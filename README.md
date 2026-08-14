@@ -7,7 +7,7 @@
 
 <br />
 
-**CertiFake Pro** is a highly distributed, full-stack microservices architecture designed to detect counterfeit professional certificates and credentials. It utilizes Optical Character Recognition (OCR), cryptographic QR code validation, and image forensics to generate a detailed authenticity score.
+**CertiFake Pro** is a distributed, full-stack microservices architecture designed to detect counterfeit professional certificates and credentials. It uses OCR text extraction (Tesseract) and image forensics — Error Level Analysis, edge-density checks, and keyword validation — to generate a detailed authenticity score.
 
 ## 🚀 Key Features
 
