@@ -9,6 +9,10 @@
 
 **CertiFake Pro** is a distributed, full-stack microservices architecture designed to detect counterfeit professional certificates and credentials. It uses OCR text extraction (Tesseract) and image forensics — Error Level Analysis, edge-density checks, and keyword validation — to generate a detailed authenticity score.
 
+> **Note on Live Demo**: There is no live hosted demo currently available. The full architecture requires a multi-service stack (Kafka, PostgreSQL, MinIO, Python Workers) which is cost-prohibitive to keep running continuously for a personal project. However, the system is fully containerized and extremely easy to spin up locally!
+
+![CertiFake Demo](demo.gif)
+
 ## 🚀 Key Features
 
 *   **Asynchronous Processing**: Uploads are queued via **Apache Kafka** and processed by dedicated forensic Python workers.
