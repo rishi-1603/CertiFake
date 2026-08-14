@@ -2,6 +2,9 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uuid
 import os
+import io
+from fastapi.responses import Response, StreamingResponse
+from app.report import create_report
 
 from app.models import SessionLocal, CertificateAnalysis, Base, engine
 from app.kafka_utils import get_kafka_producer, produce_event
@@ -76,3 +79,46 @@ def get_status(analysis_id: str):
         "suspicious_signals": analysis.suspicious_signals,
         "confidence": analysis.confidence,
     }
+
+@app.get("/heatmap/{analysis_id}")
+def get_heatmap(analysis_id: str):
+    from app.s3_utils import download_file_bytes
+    heatmap_key = f"{analysis_id}/heatmap.png"
+    try:
+        file_bytes = download_file_bytes(heatmap_key)
+        return Response(content=file_bytes, media_type="image/png")
+    except Exception:
+        raise HTTPException(status_code=404, detail="Heatmap not found")
+
+@app.get("/report/{analysis_id}")
+def get_report(analysis_id: str):
+    db = SessionLocal()
+    analysis = db.query(CertificateAnalysis).filter(CertificateAnalysis.id == analysis_id).first()
+    db.close()
+    
+    if not analysis or analysis.status != "completed":
+        raise HTTPException(status_code=404, detail="Report not ready or found")
+        
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        report_path = tmp.name
+        
+    create_report(report_path, {
+        "file_name": analysis.filename,
+        "user": "guest",
+        "authenticity_score": analysis.authenticity_score or 0,
+        "verdict": analysis.verdict or "Unknown",
+        "signals": ", ".join(analysis.suspicious_signals or []) or "None",
+        "ocr_preview": (analysis.ocr_text or "")[:1500],
+        "fields": analysis.extracted_fields or {},
+        "python_compat": "3.11",
+    })
+    
+    with open(report_path, "rb") as f:
+        pdf_bytes = f.read()
+    os.remove(report_path)
+    
+    return Response(content=pdf_bytes, media_type="application/pdf", headers={
+        "Content-Disposition": f"attachment; filename=CertiFake_Report_{analysis_id}.pdf"
+    })
+

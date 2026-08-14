@@ -187,15 +187,15 @@ function App() {
                     <pre>{result.ocr_text || 'No text extracted'}</pre>
                   </details>
 
-                  {result.preview_path && (
+                  {result.status === 'completed' && (
                     <div className="preview-wrap mt-4">
-                      <img src={result.preview_path} alt="Forensic Heatmap" />
+                      <img src={`${API_URL}/heatmap/${result.analysis_id}`} alt="Forensic Heatmap" />
                     </div>
                   )}
 
-                  {result.report_id && (
+                  {result.status === 'completed' && (
                     <a 
-                      href={`${API_URL}/report/${result.report_id}`} 
+                      href={`${API_URL}/report/${result.analysis_id}`} 
                       target="_blank" 
                       rel="noreferrer"
                       className="btn btn-secondary mt-4"
