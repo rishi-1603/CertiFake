@@ -36,7 +36,6 @@ except Exception:
 
 st.set_page_config(
     page_title="CertiFake Pro - Certificate Forensics",
-    page_icon="U+1F50D",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -52,9 +51,6 @@ st.markdown("""
     .signal-box { background: #0d1117; border-left: 3px solid #ff5252; padding: 0.6rem 1rem; margin: 0.4rem 0; border-radius: 0 8px 8px 0; font-size: 0.9rem; }
     .signal-box.positive { border-left-color: #00e676; }
     .metric-label { color: #8899aa; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; }
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
-    .stTabs [data-baseweb="tab"] { background: #1a1f2e; border-radius: 8px 8px 0 0; padding: 10px 20px; }
-    .stTabs [aria-selected="true"] { background: #2a3a4a !important; }
     .upload-box { border: 2px dashed #3a4a5a; border-radius: 16px; padding: 2rem; text-align: center; background: #0d1117; }
 </style>
 """, unsafe_allow_html=True)
@@ -87,11 +83,11 @@ class ForensicEngine:
         text = text or ""
         fields = {}
         patterns = {
-            "certificate_no": r"(cert(ificate)?\s*(no|num|#|id)?\s*[:\-]?\s*([A-Z0-9\-\/]{3,}))",
-            "name": r"((?:name|awarded\s*to|presented\s*to|recipient)\s*[:\-]?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4}))",
-            "date": r"((?:date|issued|dated|on|year)\s*[:\-]?\s*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s\.,]+\d{1,2}[\s\.,]+\d{4}|\d{4}))",
-            "institution": r"((?:university|college|institute|academy|school|board|organization|council)\s*(?:of\s*[A-Za-z]+)?\s*[:\-]?\s*([A-Z][A-Za-z0-9\s,\.&\-]{3,50}))",
-            "course": r"((?:course|program|degree\s*in|major|field)\s*[:\-]?\s*([A-Z][A-Za-z0-9\s\-]{3,40}))",
+            "certificate_no": r"(cert(ificate)?\s*(no|num|#|id)?\s*[\:\-]?\s*([A-Z0-9\-\/]{3,}))",
+            "name": r"((?:name|awarded\s*to|presented\s*to|recipient)\s*[\:\-]?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4}))",
+            "date": r"((?:date|issued|dated|on|year)\s*[\:\-]?\s*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s\.,]+\d{1,2}[\s\.,]+\d{4}|\d{4}))",
+            "institution": r"((?:university|college|institute|academy|school|board|organization|council)\s*(?:of\s*[A-Za-z]+)?\s*[\:\-]?\s*([A-Z][A-Za-z0-9\s,\.&\-]{3,50}))",
+            "course": r"((?:course|program|degree\s*in|major|field)\s*[\:\-]?\s*([A-Z][A-Za-z0-9\s\-]{3,40}))",
         }
         for key, pat in patterns.items():
             m = re.search(pat, text, re.IGNORECASE)
@@ -461,10 +457,12 @@ class ForensicEngine:
         buf.seek(0)
         return buf.getvalue()
 
+
 def render_header():
     st.markdown("""<div class="main-header">CertiFake Pro</div>""", unsafe_allow_html=True)
     st.markdown("""<div class="sub-header">Advanced AI Certificate Intelligence &amp; Forensics -- Detect counterfeit credentials with pixel-level analysis</div>""", unsafe_allow_html=True)
     st.markdown("---")
+
 
 def render_sidebar():
     with st.sidebar:
@@ -485,11 +483,13 @@ def render_sidebar():
         st.info("CertiFake Pro uses forensic image analysis to detect compression artifacts, noise inconsistencies, edge pattern anomalies, metadata tampering, and text/layout irregularities. Note: This tool provides probabilistic assessment, not legal proof.")
     return sensitivity, modules
 
+
 def render_upload():
     st.markdown("""<div class="upload-box">""", unsafe_allow_html=True)
     uploaded = st.file_uploader("Drop certificate image or PDF here", type=["png","jpg","jpeg","webp","pdf"], help="Supported: PNG, JPG, WEBP, PDF (first page)", label_visibility="collapsed")
     st.markdown("""</div>""", unsafe_allow_html=True)
     return uploaded
+
 
 def render_score_card(result):
     score = result["authenticity_score"]
@@ -498,16 +498,17 @@ def render_score_card(result):
     col1, col2, col3 = st.columns([1, 1.5, 1])
     with col1:
         color = "#00e676" if score >= 75 else "#ffab00" if score >= 50 else "#ff5252"
-        html = "<div class="score-card"><div class="metric-label">Authenticity Score</div><div style="font-size: 3rem; font-weight: 800; color: " + color + ";">" + str(score) + "</div><div style="font-size: 0.9rem; color: #8899aa;">out of 100</div></div>"
+        html = f'<div class="score-card"><div class="metric-label">Authenticity Score</div><div style="font-size: 3rem; font-weight: 800; color: {color};">{score}</div><div style="font-size: 0.9rem; color: #8899aa;">out of 100</div></div>'
         st.markdown(html, unsafe_allow_html=True)
     with col2:
-        html = "<div class="score-card"><div class="metric-label">Verdict</div><div class="" + vclass + "">" + verdict + "</div><div style="font-size: 0.85rem; color: #8899aa; margin-top: 0.5rem;">Confidence: " + str(round(result["confidence"]*100, 0)) + "%</div></div>"
+        html = f'<div class="score-card"><div class="metric-label">Verdict</div><div class="{vclass}">{verdict}</div><div style="font-size: 0.85rem; color: #8899aa; margin-top: 0.5rem;">Confidence: {round(result["confidence"]*100, 0)}%</div></div>'
         st.markdown(html, unsafe_allow_html=True)
     with col3:
         fname = result["file_name"][:25] + ("..." if len(result["file_name"]) > 25 else "")
         ctype = result["content_type"].split("/")[-1].upper()
-        html = "<div class="score-card"><div class="metric-label">File Info</div><div style="font-size: 0.9rem; color: #eaf2ff;">" + fname + "</div><div style="font-size: 0.8rem; color: #8899aa; margin-top: 0.3rem;">" + str(result["dimensions"]["width"]) + " x " + str(result["dimensions"]["height"]) + " px<br>" + ctype + "</div></div>"
+        html = f'<div class="score-card"><div class="metric-label">File Info</div><div style="font-size: 0.9rem; color: #eaf2ff;">{fname}</div><div style="font-size: 0.8rem; color: #8899aa; margin-top: 0.3rem;">{result["dimensions"]["width"]} x {result["dimensions"]["height"]} px<br>{ctype}</div></div>'
         st.markdown(html, unsafe_allow_html=True)
+
 
 def render_signals(result):
     col1, col2 = st.columns(2)
@@ -515,29 +516,30 @@ def render_signals(result):
         st.markdown("### Suspicious Signals")
         if result["suspicious_signals"]:
             for sig in result["suspicious_signals"]:
-                st.markdown("<div class="signal-box">" + sig + "</div>", unsafe_allow_html=True)
+                st.markdown(f'<div class="signal-box">{sig}</div>', unsafe_allow_html=True)
         else:
             st.success("No suspicious signals detected!")
     with col2:
         st.markdown("### Positive Indicators")
         if result["positive_signals"]:
             for sig in result["positive_signals"]:
-                st.markdown("<div class="signal-box positive">" + sig + "</div>", unsafe_allow_html=True)
+                st.markdown(f'<div class="signal-box positive">{sig}</div>', unsafe_allow_html=True)
         else:
             st.info("No strong positive indicators found.")
+
 
 def render_visualizations(result):
     st.markdown("### Forensic Visualizations")
     tabs = st.tabs(["ELA Heatmap", "Edge Map", "Noise Map", "Original"])
     with tabs[0]:
         if result["ela"]["heatmap"] is not None:
-            st.image(cv2.cvtColor(result["ela"]["heatmap"], cv2.COLOR_BGR2RGB), caption="ELA (mean: " + str(round(result["ela"]["mean"], 2)) + ", max: " + str(round(result["ela"]["max"], 2)) + ")", use_container_width=True)
+            st.image(cv2.cvtColor(result["ela"]["heatmap"], cv2.COLOR_BGR2RGB), caption=f"ELA (mean: {round(result['ela']['mean'], 2)}, max: {round(result['ela']['max'], 2)})", use_container_width=True)
             st.caption("Red/Yellow = potential manipulation")
         else:
             st.info("ELA heatmap not available")
     with tabs[1]:
         if result["edges"]["edges"] is not None:
-            st.image(result["edges"]["edges"], caption="Edge Detection (density: " + str(round(result["edges"]["edge_density"], 4)) + ")", use_container_width=True)
+            st.image(result["edges"]["edges"], caption=f"Edge Detection (density: {round(result['edges']['edge_density'], 4)})", use_container_width=True)
         else:
             st.info("Edge map not available")
     with tabs[2]:
@@ -548,6 +550,7 @@ def render_visualizations(result):
     with tabs[3]:
         st.image(st.session_state.get("uploaded_image"), caption="Original Upload", use_container_width=True)
 
+
 def render_extracted_fields(result):
     st.markdown("### Extracted Fields")
     if result["extracted_fields"]:
@@ -557,6 +560,7 @@ def render_extracted_fields(result):
                 st.metric(label=key.replace("_", " ").title(), value=str(value)[:30])
     else:
         st.warning("No structured fields could be extracted from the document.")
+
 
 def render_technical_details(result):
     with st.expander("Technical Analysis Details"):
@@ -575,9 +579,11 @@ def render_technical_details(result):
         st.markdown("**Metadata**")
         st.json(result["metadata"])
 
+
 def render_ocr_preview(result):
     with st.expander("OCR Text Preview"):
         st.text_area("Extracted Text", result["ocr_text"], height=200, label_visibility="collapsed")
+
 
 def main():
     render_header()
@@ -628,6 +634,7 @@ def main():
                                data=json.dumps(json_data, indent=2, default=str),
                                file_name="certifake_data_" + uuid.uuid4().hex[:8] + ".json",
                                mime="application/json", use_container_width=True)
+
 
 if __name__ == "__main__":
     main()
