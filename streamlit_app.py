@@ -2,50 +2,78 @@
 CertiFake Pro - Streamlit Edition
 Advanced AI Certificate Intelligence & Forensics
 """
+
 import streamlit as st
 import cv2
 import numpy as np
 from PIL import Image, ImageOps, ExifTags
 import pytesseract
-import io, os, re, uuid, tempfile, warnings
+import io
+import os
+import re
+import uuid
+import tempfile
 from datetime import datetime
+import warnings
+warnings.filterwarnings("ignore")
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.colors import HexColor
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase.pdfmetrics import stringWidth
+
 try:
     from pdf2image import convert_from_path
     PDF_AVAILABLE = True
 except Exception:
     PDF_AVAILABLE = False
+
 try:
     import pyzbar.pyzbar as pyzbar
     QR_AVAILABLE = True
 except Exception:
     QR_AVAILABLE = False
-warnings.filterwarnings("ignore")
-st.set_page_config(page_title="CertiFake Pro - Certificate Forensics", page_icon="🔍", layout="wide", initial_sidebar_state="expanded")
+
+st.set_page_config(
+    page_title="CertiFake Pro - Certificate Forensics",
+    page_icon="U+1F50D",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 st.markdown("""
 <style>
-.main-header { font-size: 2.5rem; font-weight: 800; background: linear-gradient(90deg, #00d4ff, #7b2cbf); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.2rem; }
-.sub-header { color: #8899aa; font-size: 1.05rem; margin-bottom: 1.5rem; }
-.score-card { background: linear-gradient(135deg, #1a1f2e 0%, #0f1724 100%); border-radius: 16px; padding: 1.5rem; border: 1px solid #2a3a4a; text-align: center; }
-.verdict-genuine { color: #00e676; font-weight: 700; font-size: 1.3rem; }
-.verdict-review { color: #ffab00; font-weight: 700; font-size: 1.3rem; }
-.verdict-fake { color: #ff5252; font-weight: 700; font-size: 1.3rem; }
-.signal-box { background: #0d1117; border-left: 3px solid #ff5252; padding: 0.6rem 1rem; margin: 0.4rem 0; border-radius: 0 8px 8px 0; font-size: 0.9rem; }
-.signal-box.positive { border-left-color: #00e676; }
-.metric-label { color: #8899aa; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; }
-.stTabs [data-baseweb="tab-list"] { gap: 8px; }
-.stTabs [data-baseweb="tab"] { background: #1a1f2e; border-radius: 8px 8px 0 0; padding: 10px 20px; }
-.stTabs [aria-selected="true"] { background: #2a3a4a !important; }
-.upload-box { border: 2px dashed #3a4a5a; border-radius: 16px; padding: 2rem; text-align: center; background: #0d1117; }
+    .main-header { font-size: 2.5rem; font-weight: 800; background: linear-gradient(90deg, #00d4ff, #7b2cbf); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.2rem; }
+    .sub-header { color: #8899aa; font-size: 1.05rem; margin-bottom: 1.5rem; }
+    .score-card { background: linear-gradient(135deg, #1a1f2e 0%, #0f1724 100%); border-radius: 16px; padding: 1.5rem; border: 1px solid #2a3a4a; text-align: center; }
+    .verdict-genuine { color: #00e676; font-weight: 700; font-size: 1.3rem; }
+    .verdict-review { color: #ffab00; font-weight: 700; font-size: 1.3rem; }
+    .verdict-fake { color: #ff5252; font-weight: 700; font-size: 1.3rem; }
+    .signal-box { background: #0d1117; border-left: 3px solid #ff5252; padding: 0.6rem 1rem; margin: 0.4rem 0; border-radius: 0 8px 8px 0; font-size: 0.9rem; }
+    .signal-box.positive { border-left-color: #00e676; }
+    .metric-label { color: #8899aa; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; }
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .stTabs [data-baseweb="tab"] { background: #1a1f2e; border-radius: 8px 8px 0 0; padding: 10px 20px; }
+    .stTabs [aria-selected="true"] { background: #2a3a4a !important; }
+    .upload-box { border: 2px dashed #3a4a5a; border-radius: 16px; padding: 2rem; text-align: center; background: #0d1117; }
 </style>
 """, unsafe_allow_html=True)
 
 class ForensicEngine:
-    CERTIFICATE_KEYWORDS = ["certificate","certification","diploma","degree","transcript","completion","achievement","award","license","credential","university","college","institute","academy","school","board","council","association","organization","issued","date","valid","authorized","accredited","signature","seal","stamp","registrar","principal","chancellor","dean","director","president"]
-    SUSPICIOUS_KEYWORDS = ["sample","specimen","template","draft","preview","mock","demo","test","fake","copy","replica","unofficial","void","cancelled"]
+    CERTIFICATE_KEYWORDS = [
+        "certificate","certification","diploma","degree","transcript",
+        "completion","achievement","award","license","credential",
+        "university","college","institute","academy","school",
+        "board","council","association","organization",
+        "issued","date","valid","authorized","accredited",
+        "signature","seal","stamp","registrar","principal",
+        "chancellor","dean","director","president"
+    ]
+    SUSPICIOUS_KEYWORDS = [
+        "sample","specimen","template","draft","preview",
+        "mock","demo","test","fake","copy","replica",
+        "unofficial","void","cancelled"
+    ]
 
     def preprocess_image(self, img):
         img = img.convert("L")
@@ -88,7 +116,7 @@ class ForensicEngine:
                     if tag in ["DateTime","DateTimeOriginal"]:
                         meta["created"] = str(value)
             else:
-                meta["warnings"].append("No EXIF metadata found — common in screenshots or web downloads")
+                meta["warnings"].append("No EXIF metadata found -- common in screenshots or web downloads")
         except Exception:
             pass
         return meta
@@ -172,7 +200,7 @@ class ForensicEngine:
         heights = [cv2.boundingRect(c)[3] for c in text_contours]
         warnings = []
         if np.var(heights) > 500:
-            warnings.append("High variance in text sizes — possible font inconsistency")
+            warnings.append("High variance in text sizes -- possible font inconsistency")
         return {"text_blocks": len(text_contours), "alignment_score": round(alignment_score,2),
                 "height_variance": round(float(np.var(heights)),2), "warnings": warnings}
 
@@ -186,7 +214,7 @@ class ForensicEngine:
         hist_variance = [round(float(np.var(cv2.calcHist([img_cv], [i], None, [256], [0, 256]))), 2) for i in range(3)]
         return {"color_channels": 3, "unique_color_ratio": round(color_ratio, 6),
                 "hist_variance": hist_variance,
-                "warnings": ["Low color diversity — possible digital manipulation"] if color_ratio < 0.001 else []}
+                "warnings": ["Low color diversity -- possible digital manipulation"] if color_ratio < 0.001 else []}
 
     def analyze(self, file_bytes, filename, content_type):
         suffix = ".pdf" if content_type == "application/pdf" else ".png"
@@ -219,41 +247,41 @@ class ForensicEngine:
 
             if h < 400 or w < 400:
                 score -= 12
-                signals.append("Low resolution — possible screenshot or compressed copy")
+                signals.append("Low resolution -- possible screenshot or compressed copy")
             elif h > 1000 and w > 1000:
                 score += 5
                 positive_signals.append("High resolution document")
 
             if ela_mean > 20:
                 score -= 20
-                signals.append("High ELA value (" + str(round(ela_mean,1)) + ") — significant compression/recompression artifacts")
+                signals.append("High ELA value (" + str(round(ela_mean,1)) + ") -- significant compression/recompression artifacts")
             elif ela_mean > 12:
                 score -= 10
-                signals.append("Moderate ELA value (" + str(round(ela_mean,1)) + ") — possible editing detected")
+                signals.append("Moderate ELA value (" + str(round(ela_mean,1)) + ") -- possible editing detected")
             elif ela_mean < 5:
                 score += 8
-                positive_signals.append("Low ELA — consistent compression, likely original")
+                positive_signals.append("Low ELA -- consistent compression, likely original")
             if ela_max > 100:
                 score -= 8
-                signals.append("Extreme ELA peaks (" + str(round(ela_max,1)) + ") — localized manipulation likely")
+                signals.append("Extreme ELA peaks (" + str(round(ela_max,1)) + ") -- localized manipulation likely")
 
             if edges["edge_density"] < 0.015:
                 score -= 10
-                signals.append("Unusually low edge density — possible digital rendering")
+                signals.append("Unusually low edge density -- possible digital rendering")
             elif edges["edge_density"] > 0.08:
                 score += 5
                 positive_signals.append("Rich edge detail consistent with scanned document")
             if edges["edge_uniformity"] < 5:
                 score -= 6
-                signals.append("Unnaturally uniform edge directions — possible computer-generated")
+                signals.append("Unnaturally uniform edge directions -- possible computer-generated")
 
             text_len = len(ocr_text.strip())
             if text_len < 20:
                 score -= 20
-                signals.append("Very poor OCR — unreadable or non-text image")
+                signals.append("Very poor OCR -- unreadable or non-text image")
             elif text_len < 80:
                 score -= 10
-                signals.append("Limited text extraction — possible image quality issue")
+                signals.append("Limited text extraction -- possible image quality issue")
             elif text_len > 200:
                 score += 5
                 positive_signals.append("Good text extraction")
@@ -263,7 +291,7 @@ class ForensicEngine:
             susp_matches = sum(1 for kw in self.SUSPICIOUS_KEYWORDS if kw in lower_text)
             if cert_matches < 3:
                 score -= 12
-                signals.append("Only " + str(cert_matches) + " certificate keywords found — may not be a valid certificate")
+                signals.append("Only " + str(cert_matches) + " certificate keywords found -- may not be a valid certificate")
             elif cert_matches >= 6:
                 score += 8
                 positive_signals.append("Rich certificate vocabulary (" + str(cert_matches) + " keywords)")
@@ -273,7 +301,7 @@ class ForensicEngine:
 
             if not metadata["has_exif"]:
                 score -= 5
-                signals.append("No EXIF metadata — common in edited or web-downloaded images")
+                signals.append("No EXIF metadata -- common in edited or web-downloaded images")
             else:
                 score += 3
                 positive_signals.append("EXIF metadata present")
@@ -283,7 +311,7 @@ class ForensicEngine:
 
             if noise["noise_consistency"] > 15:
                 score -= 10
-                signals.append("Inconsistent noise patterns across regions — possible composite image")
+                signals.append("Inconsistent noise patterns across regions -- possible composite image")
             elif noise["noise_consistency"] < 3:
                 score += 5
                 positive_signals.append("Consistent noise patterns")
@@ -307,7 +335,7 @@ class ForensicEngine:
                 signals.append(w)
             if layout["text_blocks"] < 5:
                 score -= 5
-                signals.append("Very few text regions — unusual for a certificate")
+                signals.append("Very few text regions -- unusual for a certificate")
             elif layout["text_blocks"] > 15:
                 score += 3
                 positive_signals.append("Complex layout with many text regions")
@@ -317,10 +345,10 @@ class ForensicEngine:
                 signals.append(w)
             if texture["texture_variance"] < 10:
                 score -= 5
-                signals.append("Abnormally uniform texture — possible digital generation")
+                signals.append("Abnormally uniform texture -- possible digital generation")
             if content_type == "application/pdf":
                 score += 3
-                positive_signals.append("PDF format — higher authenticity probability")
+                positive_signals.append("PDF format -- higher authenticity probability")
 
             score = max(0, min(100, score))
             if score >= 75:
@@ -357,7 +385,7 @@ class ForensicEngine:
         c.rect(0, 0, w, h, fill=1, stroke=0)
         c.setFillColor(HexColor("#68e1fd"))
         c.setFont("Helvetica-Bold", 22)
-        c.drawString(42, h-52, "CertiFake Pro — Forensic Report")
+        c.drawString(42, h-52, "CertiFake Pro -- Forensic Report")
         c.setFillColor(HexColor("#8899aa"))
         c.setFont("Helvetica", 9)
         c.drawString(42, h-68, "Generated: " + str(result["analysis_timestamp"]))
@@ -406,7 +434,7 @@ class ForensicEngine:
         c.setFont("Helvetica", 9)
         c.setFillColor(HexColor("#dce7f7"))
         for sig in result["suspicious_signals"]:
-            c.drawString(42, y, "• " + str(sig)[:90])
+            c.drawString(42, y, "- " + str(sig)[:90])
             y -= 13
         if result["positive_signals"]:
             y -= 10
@@ -417,7 +445,7 @@ class ForensicEngine:
             c.setFont("Helvetica", 9)
             c.setFillColor(HexColor("#dce7f7"))
             for sig in result["positive_signals"]:
-                c.drawString(42, y, "✓ " + str(sig)[:90])
+                c.drawString(42, y, "+ " + str(sig)[:90])
                 y -= 13
         y -= 10
         c.setFillColor(HexColor("#8899aa"))
@@ -434,13 +462,13 @@ class ForensicEngine:
         return buf.getvalue()
 
 def render_header():
-    st.markdown(''<div class="main-header">🔍 CertiFake Pro</div>'', unsafe_allow_html=True)
-    st.markdown(''<div class="sub-header">Advanced AI Certificate Intelligence & Forensics — Detect counterfeit credentials with pixel-level analysis</div>'', unsafe_allow_html=True)
+    st.markdown("""<div class="main-header">CertiFake Pro</div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="sub-header">Advanced AI Certificate Intelligence &amp; Forensics -- Detect counterfeit credentials with pixel-level analysis</div>""", unsafe_allow_html=True)
     st.markdown("---")
 
 def render_sidebar():
     with st.sidebar:
-        st.markdown("### 📊 Analysis Settings")
+        st.markdown("### Analysis Settings")
         st.markdown("**Detection Sensitivity**")
         sensitivity = st.slider("Sensitivity", 0.5, 1.5, 1.0, 0.1, help="Higher values make detection more strict")
         st.markdown("**Analysis Modules**")
@@ -453,14 +481,14 @@ def render_sidebar():
             "texture": st.checkbox("Texture Analysis", value=True),
         }
         st.markdown("---")
-        st.markdown("### ℹ️ About")
+        st.markdown("### About")
         st.info("CertiFake Pro uses forensic image analysis to detect compression artifacts, noise inconsistencies, edge pattern anomalies, metadata tampering, and text/layout irregularities. Note: This tool provides probabilistic assessment, not legal proof.")
     return sensitivity, modules
 
 def render_upload():
-    st.markdown(''<div class="upload-box">'', unsafe_allow_html=True)
-    uploaded = st.file_uploader("📁 Drop certificate image or PDF here", type=["png","jpg","jpeg","webp","pdf"], help="Supported: PNG, JPG, WEBP, PDF (first page)", label_visibility="collapsed")
-    st.markdown(''</div>'', unsafe_allow_html=True)
+    st.markdown("""<div class="upload-box">""", unsafe_allow_html=True)
+    uploaded = st.file_uploader("Drop certificate image or PDF here", type=["png","jpg","jpeg","webp","pdf"], help="Supported: PNG, JPG, WEBP, PDF (first page)", label_visibility="collapsed")
+    st.markdown("""</div>""", unsafe_allow_html=True)
     return uploaded
 
 def render_score_card(result):
@@ -470,38 +498,41 @@ def render_score_card(result):
     col1, col2, col3 = st.columns([1, 1.5, 1])
     with col1:
         color = "#00e676" if score >= 75 else "#ffab00" if score >= 50 else "#ff5252"
-        st.markdown(''<div class="score-card"><div class="metric-label">Authenticity Score</div><div style="font-size: 3rem; font-weight: 800; color: ' + color + ';">' + str(score) + '</div><div style="font-size: 0.9rem; color: #8899aa;">out of 100</div></div>'', unsafe_allow_html=True)
+        html = "<div class="score-card"><div class="metric-label">Authenticity Score</div><div style="font-size: 3rem; font-weight: 800; color: " + color + ";">" + str(score) + "</div><div style="font-size: 0.9rem; color: #8899aa;">out of 100</div></div>"
+        st.markdown(html, unsafe_allow_html=True)
     with col2:
-        st.markdown(''<div class="score-card"><div class="metric-label">Verdict</div><div class="' + vclass + '">' + verdict + '</div><div style="font-size: 0.85rem; color: #8899aa; margin-top: 0.5rem;">Confidence: ' + str(round(result["confidence"]*100, 0)) + '%</div></div>'', unsafe_allow_html=True)
+        html = "<div class="score-card"><div class="metric-label">Verdict</div><div class="" + vclass + "">" + verdict + "</div><div style="font-size: 0.85rem; color: #8899aa; margin-top: 0.5rem;">Confidence: " + str(round(result["confidence"]*100, 0)) + "%</div></div>"
+        st.markdown(html, unsafe_allow_html=True)
     with col3:
         fname = result["file_name"][:25] + ("..." if len(result["file_name"]) > 25 else "")
         ctype = result["content_type"].split("/")[-1].upper()
-        st.markdown(''<div class="score-card"><div class="metric-label">File Info</div><div style="font-size: 0.9rem; color: #eaf2ff;">' + fname + '</div><div style="font-size: 0.8rem; color: #8899aa; margin-top: 0.3rem;">' + str(result["dimensions"]["width"]) + ' × ' + str(result["dimensions"]["height"]) + ' px<br>' + ctype + '</div></div>'', unsafe_allow_html=True)
+        html = "<div class="score-card"><div class="metric-label">File Info</div><div style="font-size: 0.9rem; color: #eaf2ff;">" + fname + "</div><div style="font-size: 0.8rem; color: #8899aa; margin-top: 0.3rem;">" + str(result["dimensions"]["width"]) + " x " + str(result["dimensions"]["height"]) + " px<br>" + ctype + "</div></div>"
+        st.markdown(html, unsafe_allow_html=True)
 
 def render_signals(result):
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("### 🚩 Suspicious Signals")
+        st.markdown("### Suspicious Signals")
         if result["suspicious_signals"]:
             for sig in result["suspicious_signals"]:
-                st.markdown(''<div class="signal-box">' + sig + '</div>'', unsafe_allow_html=True)
+                st.markdown("<div class="signal-box">" + sig + "</div>", unsafe_allow_html=True)
         else:
             st.success("No suspicious signals detected!")
     with col2:
-        st.markdown("### ✅ Positive Indicators")
+        st.markdown("### Positive Indicators")
         if result["positive_signals"]:
             for sig in result["positive_signals"]:
-                st.markdown(''<div class="signal-box positive">' + sig + '</div>'', unsafe_allow_html=True)
+                st.markdown("<div class="signal-box positive">" + sig + "</div>", unsafe_allow_html=True)
         else:
             st.info("No strong positive indicators found.")
 
 def render_visualizations(result):
-    st.markdown("### 🔬 Forensic Visualizations")
+    st.markdown("### Forensic Visualizations")
     tabs = st.tabs(["ELA Heatmap", "Edge Map", "Noise Map", "Original"])
     with tabs[0]:
         if result["ela"]["heatmap"] is not None:
             st.image(cv2.cvtColor(result["ela"]["heatmap"], cv2.COLOR_BGR2RGB), caption="ELA (mean: " + str(round(result["ela"]["mean"], 2)) + ", max: " + str(round(result["ela"]["max"], 2)) + ")", use_container_width=True)
-            st.caption("🔴 Red/Yellow = potential manipulation")
+            st.caption("Red/Yellow = potential manipulation")
         else:
             st.info("ELA heatmap not available")
     with tabs[1]:
@@ -518,7 +549,7 @@ def render_visualizations(result):
         st.image(st.session_state.get("uploaded_image"), caption="Original Upload", use_container_width=True)
 
 def render_extracted_fields(result):
-    st.markdown("### 📋 Extracted Fields")
+    st.markdown("### Extracted Fields")
     if result["extracted_fields"]:
         cols = st.columns(min(len(result["extracted_fields"]), 4))
         for idx, (key, value) in enumerate(result["extracted_fields"].items()):
@@ -528,7 +559,7 @@ def render_extracted_fields(result):
         st.warning("No structured fields could be extracted from the document.")
 
 def render_technical_details(result):
-    with st.expander("🔧 Technical Analysis Details"):
+    with st.expander("Technical Analysis Details"):
         col1, col2, col3 = st.columns(3)
         with col1:
             st.markdown("**Noise Analysis**")
@@ -545,7 +576,7 @@ def render_technical_details(result):
         st.json(result["metadata"])
 
 def render_ocr_preview(result):
-    with st.expander("📝 OCR Text Preview"):
+    with st.expander("OCR Text Preview"):
         st.text_area("Extracted Text", result["ocr_text"], height=200, label_visibility="collapsed")
 
 def main():
@@ -566,7 +597,7 @@ def main():
         else:
             display_img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
         st.session_state["uploaded_image"] = display_img
-        with st.spinner("🔬 Running forensic analysis... This may take 10-30 seconds"):
+        with st.spinner("Running forensic analysis... This may take 10-30 seconds"):
             engine = ForensicEngine()
             result = engine.analyze(file_bytes, filename, content_type)
         st.success("Analysis complete!")
@@ -582,18 +613,18 @@ def main():
         render_technical_details(result)
         render_ocr_preview(result)
         st.markdown("---")
-        st.markdown("### 📥 Download Report")
+        st.markdown("### Download Report")
         col1, col2 = st.columns(2)
         with col1:
             pdf_bytes = engine.generate_pdf_report(result)
-            st.download_button(label="⬇️ Download PDF Report", data=pdf_bytes,
+            st.download_button(label="Download PDF Report", data=pdf_bytes,
                                file_name="certifake_report_" + uuid.uuid4().hex[:8] + ".pdf",
                                mime="application/pdf", use_container_width=True)
         with col2:
             import json
             json_data = {k: v for k, v in result.items() if k not in ["ela", "edges"]}
             json_data["ela"] = {"mean": result["ela"]["mean"], "max": result["ela"]["max"]}
-            st.download_button(label="⬇️ Download JSON Data",
+            st.download_button(label="Download JSON Data",
                                data=json.dumps(json_data, indent=2, default=str),
                                file_name="certifake_data_" + uuid.uuid4().hex[:8] + ".json",
                                mime="application/json", use_container_width=True)
