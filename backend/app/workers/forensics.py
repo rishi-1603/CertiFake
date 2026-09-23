@@ -39,8 +39,15 @@ def process_forensics(event):
             
         confidence = round(score / 100.0, 2)
         
-        # Upload Heatmap to Minio
-        heatmap_key = f"{analysis_id}/heatmap.png"
+        # Upload Heatmap to Minio, alongside the original file (same
+        # "{user_id}/{analysis_id}/" prefix as file_key) so that
+        # GET /heatmap/{analysis_id} in app/api.py -- which looks for
+        # "{user.id}/{analysis_id}/heatmap.png" -- finds it. Deriving this
+        # from file_key's own directory (rather than reconstructing
+        # "{analysis_id}/heatmap.png" from scratch, which is what this line
+        # used to do) keeps the two in sync even if the key layout changes
+        # again in the future.
+        heatmap_key = f"{os.path.dirname(file_key)}/heatmap.png"
         if heat:
             import base64
             upload_file_bytes(heatmap_key, base64.b64decode(heat))

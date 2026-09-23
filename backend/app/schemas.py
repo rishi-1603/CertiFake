@@ -1,22 +1,39 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, Dict, List
 
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+
+
 class LoginRequest(BaseModel):
-    username: str = Field(min_length=1)
+    email: EmailStr
     password: str = Field(min_length=1)
+
 
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
 
-class AnalyzeResponse(BaseModel):
-    file_name: str
-    content_type: str
-    authenticity_score: float
-    verdict: str
-    ocr_text: str
-    extracted_fields: Dict[str, str]
-    suspicious_signals: List[str]
-    confidence: float
-    report_id: Optional[str] = None
-    preview_path: Optional[str] = None
+
+class UserRead(BaseModel):
+    id: str
+    email: str
+
+
+class AnalyzeAcceptedResponse(BaseModel):
+    analysis_id: str
+    status: str
+    message: str
+
+
+class AnalysisStatusResponse(BaseModel):
+    analysis_id: str
+    status: str
+    authenticity_score: Optional[float] = None
+    verdict: Optional[str] = None
+    ocr_text: Optional[str] = None
+    extracted_fields: Optional[Dict[str, str]] = None
+    suspicious_signals: Optional[List[str]] = None
+    confidence: Optional[float] = None

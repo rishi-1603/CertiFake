@@ -1,9 +1,87 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import './index.css'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
+const TOKEN_KEY = 'certifake_token'
+const EMAIL_KEY = 'certifake_email'
+
+function AuthPanel({ token, email, onAuthenticated, onLogout }) {
+  const [mode, setMode] = useState('login') // 'login' | 'register'
+  const [formEmail, setFormEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  if (token) {
+    return (
+      <div className="card panel">
+        <h2>Account</h2>
+        <div className="evidence-list">
+          <div><span>Signed in as</span><strong>{email}</strong></div>
+        </div>
+        <button className="btn btn-secondary mt-4" onClick={onLogout}>Log out</button>
+      </div>
+    )
+  }
+
+  const submit = async (e) => {
+    e.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      const endpoint = mode === 'login' ? '/auth/login' : '/auth/register'
+      const res = await fetch(`${API_URL}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: formEmail, password }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'Authentication failed')
+      onAuthenticated(data.access_token, formEmail)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="card panel">
+      <h2>{mode === 'login' ? 'Log in' : 'Create account'}</h2>
+      <form onSubmit={submit} className="grid">
+        <input
+          type="email"
+          placeholder="Email"
+          value={formEmail}
+          onChange={e => setFormEmail(e.target.value)}
+          required
+        />
+        <input
+          type="password"
+          placeholder="Password (min 8 characters)"
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          minLength={8}
+          required
+        />
+        {error && <div className="pill bad">{error}</div>}
+        <button className="btn" type="submit" disabled={busy}>
+          {busy ? 'Please wait...' : mode === 'login' ? 'Log in' : 'Sign up'}
+        </button>
+      </form>
+      <button
+        className="btn btn-secondary mt-4"
+        onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError('') }}
+      >
+        {mode === 'login' ? "Need an account? Sign up" : 'Already have an account? Log in'}
+      </button>
+    </div>
+  )
+}
 
 function App() {
+  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '')
+  const [email, setEmail] = useState(() => localStorage.getItem(EMAIL_KEY) || '')
   const [file, setFile] = useState(null)
   const [isDragActive, setIsDragActive] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
@@ -11,34 +89,55 @@ function App() {
   const [error, setError] = useState('')
   const fileInputRef = useRef(null)
 
+  useEffect(() => {
+    if (token) localStorage.setItem(TOKEN_KEY, token)
+    else localStorage.removeItem(TOKEN_KEY)
+    if (email) localStorage.setItem(EMAIL_KEY, email)
+    else localStorage.removeItem(EMAIL_KEY)
+  }, [token, email])
+
+  const authHeaders = () => ({ Authorization: `Bearer ${token}` })
+
+  const handleLogout = () => {
+    setToken('')
+    setEmail('')
+    setResult(null)
+  }
+
   const handleAnalyze = async () => {
+    if (!token) return setError('Log in first to analyze a certificate')
     if (!file) return setError('Choose a certificate file first')
-      
+
     setAnalyzing(true)
     setError('')
     setResult(null)
-    
+
     const formData = new FormData()
     formData.append('file', file)
-    
+
     try {
       const res = await fetch(`${API_URL}/analyze`, {
         method: 'POST',
-        body: formData
+        headers: authHeaders(),
+        body: formData,
       })
       const data = await res.json()
+      if (res.status === 401) {
+        handleLogout()
+        throw new Error('Session expired, please log in again')
+      }
       if (!res.ok) throw new Error(data.detail || 'Analysis failed')
-      
+
       const analysisId = data.analysis_id
-      
+
       const poll = setInterval(async () => {
         try {
-          const statusRes = await fetch(`${API_URL}/status/${analysisId}`)
+          const statusRes = await fetch(`${API_URL}/status/${analysisId}`, { headers: authHeaders() })
           const statusData = await statusRes.json()
-          
+
           if (statusData.status === 'completed') {
             clearInterval(poll)
-            setResult(statusData)
+            setResult({ ...statusData, analysis_id: analysisId })
             setAnalyzing(false)
           } else if (statusData.status === 'failed') {
             clearInterval(poll)
@@ -51,11 +150,10 @@ function App() {
           setAnalyzing(false)
         }
       }, 2000)
-      
     } catch (err) {
       setError(err.message)
       setAnalyzing(false)
-    } 
+    }
   }
 
   const handleFileChange = (e) => {
@@ -80,6 +178,45 @@ function App() {
     return 'var(--bad)'
   }
 
+  // Heatmap/report are protected endpoints now, so plain <img src> / <a
+  // href> tags (which cannot send an Authorization header) no longer work
+  // -- fetch them as blobs instead and point the element at an object URL.
+  const [heatmapUrl, setHeatmapUrl] = useState(null)
+  useEffect(() => {
+    let objectUrl
+    if (result?.status === 'completed' && token) {
+      fetch(`${API_URL}/heatmap/${result.analysis_id}`, { headers: authHeaders() })
+        .then(res => (res.ok ? res.blob() : null))
+        .then(blob => {
+          if (blob) {
+            objectUrl = URL.createObjectURL(blob)
+            setHeatmapUrl(objectUrl)
+          }
+        })
+        .catch(() => {})
+    } else {
+      setHeatmapUrl(null)
+    }
+    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl) }
+  }, [result, token])
+
+  const downloadReport = async () => {
+    if (!result) return
+    try {
+      const res = await fetch(`${API_URL}/report/${result.analysis_id}`, { headers: authHeaders() })
+      if (!res.ok) throw new Error('Could not fetch report')
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `CertiFake_Report_${result.analysis_id}.pdf`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
   const scoreValue = result?.authenticity_score ?? 0
   const ringOffset = 326.7 - (326.7 * scoreValue / 100)
 
@@ -99,9 +236,9 @@ function App() {
           <div className="ring-wrap">
             <svg viewBox="0 0 120 120" className="ring">
               <circle cx="60" cy="60" r="52" className="ring-track"></circle>
-              <circle 
-                cx="60" cy="60" r="52" 
-                className="ring-fill" 
+              <circle
+                cx="60" cy="60" r="52"
+                className="ring-fill"
                 style={{ strokeDashoffset: ringOffset, stroke: getRingColor(scoreValue) }}
               ></circle>
             </svg>
@@ -117,11 +254,16 @@ function App() {
         <section className="grid two-col">
           {/* Left Column */}
           <div className="grid">
-            {/* Authentication panel removed */}
+            <AuthPanel
+              token={token}
+              email={email}
+              onAuthenticated={(newToken, newEmail) => { setToken(newToken); setEmail(newEmail); setError('') }}
+              onLogout={handleLogout}
+            />
 
             <div className="card panel">
               <h2>Upload Document</h2>
-              <div 
+              <div
                 className={`dropzone ${isDragActive ? 'active' : ''}`}
                 onDragOver={e => { e.preventDefault(); setIsDragActive(true); }}
                 onDragLeave={() => setIsDragActive(false)}
@@ -135,23 +277,23 @@ function App() {
                 }}
                 onClick={() => fileInputRef.current.click()}
               >
-                <input 
-                  type="file" 
-                  ref={fileInputRef} 
-                  hidden 
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  hidden
                   accept="image/*,application/pdf"
-                  onChange={handleFileChange} 
+                  onChange={handleFileChange}
                 />
                 <strong>{file ? file.name : 'Drop certificate here'}</strong>
                 <p>or click to browse JPG, PNG, WEBP, or PDF</p>
               </div>
-              
-              <button 
-                className="btn mt-4" 
-                onClick={handleAnalyze} 
-                disabled={!file || analyzing}
+
+              <button
+                className="btn mt-4"
+                onClick={handleAnalyze}
+                disabled={!file || analyzing || !token}
               >
-                {analyzing ? 'Analyzing...' : 'Analyze Document'}
+                {!token ? 'Log in to analyze' : analyzing ? 'Analyzing...' : 'Analyze Document'}
               </button>
             </div>
           </div>
@@ -167,8 +309,7 @@ function App() {
               {result && (
                 <>
                   <div className="evidence-list">
-                    <div><span>Confidence</span><strong>{Math.round(result.confidence * 100)}%</strong></div>
-                    <div><span>File Type</span><strong>{result.content_type}</strong></div>
+                    <div><span>Confidence</span><strong>{Math.round((result.confidence ?? 0) * 100)}%</strong></div>
                     <div>
                       <span>Suspicious Signals</span>
                       <strong style={{color: result.suspicious_signals?.length > 0 ? 'var(--warn)' : 'var(--good)'}}>
@@ -187,21 +328,16 @@ function App() {
                     <pre>{result.ocr_text || 'No text extracted'}</pre>
                   </details>
 
-                  {result.status === 'completed' && (
+                  {result.status === 'completed' && heatmapUrl && (
                     <div className="preview-wrap mt-4">
-                      <img src={`${API_URL}/heatmap/${result.analysis_id}`} alt="Forensic Heatmap" />
+                      <img src={heatmapUrl} alt="Forensic Heatmap" />
                     </div>
                   )}
 
                   {result.status === 'completed' && (
-                    <a 
-                      href={`${API_URL}/report/${result.analysis_id}`} 
-                      target="_blank" 
-                      rel="noreferrer"
-                      className="btn btn-secondary mt-4"
-                    >
+                    <button className="btn btn-secondary mt-4" onClick={downloadReport}>
                       Download PDF Report
-                    </a>
+                    </button>
                   )}
                 </>
               )}
