@@ -40,20 +40,28 @@ commit (the pre-removal code only checked "is there a valid token", not
 "does this token's user own this specific analysis").
 """
 import os
+import time
 import uuid
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy.orm import Session
 
 from app.auth import _get_db, login, register, require_user
 from app.config import settings
 from app.kafka_utils import get_kafka_producer, produce_event
+from app.metrics import analyze_request_duration_seconds, analyze_requests_total
 from app.models import Base, CertificateAnalysis, User, engine
 from app.rate_limit import check_rate_limit
 from app.report import create_report
-from app.s3_utils import StorageObjectNotFoundError, StorageUnavailableError, download_file_bytes, upload_file_bytes
+from app.s3_utils import (
+    StorageObjectNotFoundError,
+    StorageUnavailableError,
+    download_file_bytes,
+    upload_file_bytes,
+)
 from app.schemas import (
     AnalysisStatusResponse,
     AnalyzeAcceptedResponse,
@@ -78,10 +86,28 @@ app.add_middleware(
 Base.metadata.create_all(bind=engine)
 producer = get_kafka_producer()
 
-
 @app.get("/health")
 def health():
     return {"status": "ok", "app": "CertiFake Distributed API Gateway"}
+
+
+@app.get("/metrics")
+def metrics():
+    """Prometheus scrape endpoint -- see app/metrics.py for what is
+    actually tracked and why. This closes a real gap: monitoring/
+    prometheus.yml already targeted this exact path (on api-gateway,
+    worker-ocr, and worker-forensics) before any of the three exposed it.
+
+    Deliberately a plain route (not `app.mount(..., make_asgi_app())`):
+    Starlette's Mount treats "/metrics" as a routing prefix and 307-
+    redirects a bare `GET /metrics` (no trailing slash) to `/metrics/` --
+    harmless for well-behaved HTTP clients that follow redirects, but an
+    unnecessary trap for the exact default path a Prometheus scrape
+    config or a quick `curl` would use. A plain route serves the same
+    content at the exact path with no redirect involved. Unauthenticated
+    like /health -- Prometheus has no way to send this API's JWTs.
+    """
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +159,7 @@ def _rate_limit_analyze(user: User = Depends(require_user)) -> None:
         f"analyze:{user.id}", limit=settings.analyze_rate_limit_per_minute, window_seconds=60
     )
     if not allowed:
+        analyze_requests_total.labels(outcome="rate_limited").inc()
         raise HTTPException(
             status_code=429,
             detail="Too many analysis requests. Please wait before uploading again.",
@@ -147,55 +174,68 @@ async def analyze(
     db: Session = Depends(_get_db),
     _rate_limited: None = Depends(_rate_limit_analyze),
 ):
-    data = await file.read()
-    # Real content validation (magic-byte sniffing, size limit, filename/path
-    # sanitization) rather than trusting the client-supplied Content-Type
-    # header, which is trivially spoofable. See app/security.py.
-    content_type = validate_upload(filename=file.filename, data=data, declared_content_type=file.content_type)
-
-    analysis_id = uuid.uuid4().hex
-    safe_filename = os.path.basename(file.filename or "upload")
-    file_key = f"{user.id}/{analysis_id}/{safe_filename}"
+    # Only the synchronous part of this handler is timed (upload validation,
+    # S3 write, DB insert, Kafka publish) -- OCR/forensics happen later in
+    # separate worker processes and are timed/counted there instead (see
+    # app/workers/ocr.py, app/workers/forensics.py, app/metrics.py).
+    start = time.monotonic()
     try:
-        upload_file_bytes(file_key, data)
-    except StorageUnavailableError:
-        # Fails BEFORE any DB row is created, so there is no orphaned
-        # "analyzing" record left behind when storage is down -- unlike the
-        # Kafka-publish-failure path below, which happens after the DB
-        # commit and therefore explicitly marks the row "failed" instead.
-        raise HTTPException(status_code=503, detail="File storage is temporarily unavailable. Please try again shortly.")
+        data = await file.read()
+        # Real content validation (magic-byte sniffing, size limit, filename/path
+        # sanitization) rather than trusting the client-supplied Content-Type
+        # header, which is trivially spoofable. See app/security.py.
+        content_type = validate_upload(filename=file.filename, data=data, declared_content_type=file.content_type)
 
-    new_analysis = CertificateAnalysis(
-        id=analysis_id,
-        user_id=user.id,
-        filename=safe_filename,
-        content_type=content_type,
-        status="analyzing",
-    )
-    db.add(new_analysis)
-    db.commit()
+        analysis_id = uuid.uuid4().hex
+        safe_filename = os.path.basename(file.filename or "upload")
+        file_key = f"{user.id}/{analysis_id}/{safe_filename}"
+        try:
+            upload_file_bytes(file_key, data)
+        except StorageUnavailableError:
+            # Fails BEFORE any DB row is created, so there is no orphaned
+            # "analyzing" record left behind when storage is down -- unlike the
+            # Kafka-publish-failure path below, which happens after the DB
+            # commit and therefore explicitly marks the row "failed" instead.
+            analyze_requests_total.labels(outcome="storage_unavailable").inc()
+            raise HTTPException(
+                status_code=503, detail="File storage is temporarily unavailable. Please try again shortly."
+            )
 
-    event = {"analysis_id": analysis_id, "file_key": file_key, "content_type": content_type}
-    delivered = produce_event(producer, "certificate_uploaded", analysis_id, event)
-
-    if not delivered:
-        # The file is safely in S3 and the DB row exists, but no worker will
-        # ever pick it up without the Kafka event. Recording this explicitly
-        # (rather than silently returning "analyzing" forever) means a
-        # client polling GET /status/{id} sees "failed" with a clear reason
-        # instead of waiting indefinitely for a completion that will never
-        # come -- this is the failure-mode behavior this project's own
-        # design docs call for (queue/broker outage handling), not just
-        # "the API works when everything is working."
-        new_analysis.status = "failed"
+        new_analysis = CertificateAnalysis(
+            id=analysis_id,
+            user_id=user.id,
+            filename=safe_filename,
+            content_type=content_type,
+            status="analyzing",
+        )
         db.add(new_analysis)
         db.commit()
-        raise HTTPException(
-            status_code=503,
-            detail="Certificate was stored but could not be queued for analysis (message broker unavailable). Please try again shortly.",
-        )
 
-    return {"analysis_id": analysis_id, "status": "analyzing", "message": "Certificate queued for distributed analysis"}
+        event = {"analysis_id": analysis_id, "file_key": file_key, "content_type": content_type}
+        delivered = produce_event(producer, "certificate_uploaded", analysis_id, event)
+
+        if not delivered:
+            # The file is safely in S3 and the DB row exists, but no worker will
+            # ever pick it up without the Kafka event. Recording this explicitly
+            # (rather than silently returning "analyzing" forever) means a
+            # client polling GET /status/{id} sees "failed" with a clear reason
+            # instead of waiting indefinitely for a completion that will never
+            # come -- this is the failure-mode behavior this project's own
+            # design docs call for (queue/broker outage handling), not just
+            # "the API works when everything is working."
+            new_analysis.status = "failed"
+            db.add(new_analysis)
+            db.commit()
+            analyze_requests_total.labels(outcome="broker_unavailable").inc()
+            raise HTTPException(
+                status_code=503,
+                detail="Certificate was stored but could not be queued for analysis (message broker unavailable). Please try again shortly.",
+            )
+
+        analyze_requests_total.labels(outcome="accepted").inc()
+        return {"analysis_id": analysis_id, "status": "analyzing", "message": "Certificate queued for distributed analysis"}
+    finally:
+        analyze_request_duration_seconds.observe(time.monotonic() - start)
 
 
 @app.get("/status/{analysis_id}", response_model=AnalysisStatusResponse)

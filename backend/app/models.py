@@ -1,7 +1,8 @@
-from sqlalchemy import Column, String, Float, JSON, DateTime, ForeignKey, create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-from datetime import datetime, timezone
 import os
+from datetime import datetime, timezone
+
+from sqlalchemy import JSON, Column, DateTime, Float, ForeignKey, String, create_engine
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 
 def _utcnow() -> datetime:

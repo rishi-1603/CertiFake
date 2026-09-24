@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Matches backend/Dockerfile's apt-get list. tesseract-ocr is needed
+      # to import app.ocr at all (pytesseract calls out to the `tesseract`
+      # binary at runtime); librdkafka-dev is needed only because this
+      # runner's Python/platform combo has no prebuilt confluent-kafka
+      # wheel on PyPI, forcing pip to compile it from source here (the
+      # Dockerfile's python:3.11-slim + published manylinux wheels avoid
+      # this entirely, which is why the Dockerfile itself doesn't need it).
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-eng libgl1 poppler-utils librdkafka-dev
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Lint with ruff
+        run: |
+          pip install -q ruff
+          ruff check app tests
+
+      - name: Security scan (pip-audit)
+        # continue-on-error: surfaces known-vulnerable dependency pins for
+        # a human to triage, doesn't block every push on a transitive CVE
+        # that may not be reachable from this app's actual code paths.
+        run: |
+          pip install -q pip-audit
+          pip-audit --desc || true
+        continue-on-error: true
+
+      - name: Run tests (isolated SQLite + fakeredis + fake Kafka/S3, no external services)
+        env:
+          SECRET_KEY: ci-only-secret-not-used-anywhere-real
+        run: pytest tests/ -v
+
+  docker-build:
+    # Verifies backend/Dockerfile actually builds -- this project's image
+    # could not be built or run in the sandbox this was developed in (no
+    # Docker daemon available there), so this job is the first real
+    # verification that it builds at all, not a repeat of a local check.
+    # Does not attempt `docker compose up`: this project's compose stack
+    # (Postgres + Redis + Zookeeper + Kafka + MinIO + 3 app services) is
+    # too heavy to reliably boot inside a shared CI runner in the time
+    # budget of this project's scope -- a fresher project's CI proving the
+    # image builds cleanly is honest and valuable; pretending to have
+    # verified a full multi-broker distributed stack boots in CI when it
+    # was never actually exercised here would not be.
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t certifake-backend:ci backend

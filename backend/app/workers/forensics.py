@@ -1,10 +1,12 @@
 import json
 import os
 import tempfile
-from app.kafka_utils import get_kafka_consumer, produce_event, get_kafka_producer
+
+from app.forensics import heatmap_b64, score_document
+from app.kafka_utils import get_kafka_consumer, get_kafka_producer, produce_event
+from app.metrics import worker_events_failed_total, worker_events_processed_total
+from app.models import CertificateAnalysis, SessionLocal
 from app.s3_utils import download_file_bytes, upload_file_bytes
-from app.models import SessionLocal, CertificateAnalysis
-from app.forensics import score_document, heatmap_b64
 
 consumer = get_kafka_consumer("forensics-worker-group", ["ocr_completed"])
 producer = get_kafka_producer()
@@ -14,31 +16,31 @@ def process_forensics(event):
     file_key = event["file_key"]
     content_type = event["content_type"]
     ocr_text = event.get("ocr_text", "")
-    
+
     print(f"[Forensics] Processing {analysis_id}")
-    
+
     try:
         # Download from Minio
         file_bytes = download_file_bytes(file_key)
-        
+
         ext = ".pdf" if content_type == "application/pdf" else ".jpg"
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
             tmp.write(file_bytes)
             tmp_path = tmp.name
-            
+
         # Run Forensics
         score, signals, gray = score_document(tmp_path, ocr_text, content_type)
         heat = heatmap_b64(gray)
-        
+
         if score >= 80:
             verdict = "Likely Genuine"
         elif score >= 55:
             verdict = "Needs Review"
         else:
             verdict = "Likely Fake"
-            
+
         confidence = round(score / 100.0, 2)
-        
+
         # Upload Heatmap to Minio, alongside the original file (same
         # "{user_id}/{analysis_id}/" prefix as file_key) so that
         # GET /heatmap/{analysis_id} in app/api.py -- which looks for
@@ -51,7 +53,7 @@ def process_forensics(event):
         if heat:
             import base64
             upload_file_bytes(heatmap_key, base64.b64decode(heat))
-            
+
         # Update DB
         db = SessionLocal()
         analysis = db.query(CertificateAnalysis).filter(CertificateAnalysis.id == analysis_id).first()
@@ -63,13 +65,15 @@ def process_forensics(event):
             analysis.status = "completed"
             db.commit()
         db.close()
-        
+
         # Publish completion event
         produce_event(producer, "analysis_completed", analysis_id, {"analysis_id": analysis_id})
         print(f"[Forensics] Completed {analysis_id}")
-        
+        worker_events_processed_total.labels(worker="forensics").inc()
+
     except Exception as e:
         print(f"[Forensics] Failed {analysis_id}: {e}")
+        worker_events_failed_total.labels(worker="forensics").inc()
         db = SessionLocal()
         analysis = db.query(CertificateAnalysis).filter(CertificateAnalysis.id == analysis_id).first()
         if analysis:
@@ -81,6 +85,12 @@ def process_forensics(event):
             os.remove(tmp_path)
 
 if __name__ == "__main__":
+    # See app/workers/ocr.py for why a metrics-only HTTP server is started
+    # here: this worker is a bare Kafka consumer loop with no HTTP server
+    # of its own, but monitoring/prometheus.yml already targets
+    # "worker-forensics:8000" and expects something to answer /metrics.
+    from prometheus_client import start_http_server
+    start_http_server(8000)
     print("[Forensics] Worker started. Waiting for events...")
     while True:
         msg = consumer.poll(1.0)
@@ -89,6 +99,6 @@ if __name__ == "__main__":
         if msg.error():
             print(f"[Forensics] Consumer error: {msg.error()}")
             continue
-        
+
         event = json.loads(msg.value().decode('utf-8'))
         process_forensics(event)

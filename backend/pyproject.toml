@@ -1,0 +1,14 @@
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+# E501 (line-too-long) ignored: the docstrings throughout this codebase
+# document real design decisions and failure-mode reasoning in prose;
+# wrapping every long sentence at 110 chars for a linter buys nothing.
+# "B" (flake8-bugbear) deliberately not enabled: it flags FastAPI's own
+# idiomatic `Depends(...)` mutable-default pattern (B008) as a bug, which
+# it isn't here -- same reasoning already applied in the sibling
+# DevTrack/Repay-Master projects' ruff configs.
+ignore = ["E501"]

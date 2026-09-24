@@ -5,7 +5,7 @@ or fabrication, using OCR text extraction and pixel-level forensic
 heuristics (not a trained ML classifier — see "How scoring works" below for
 exactly what is and isn't implemented).
 
-## Status: mid-rebuild (Day 1-2 of a 7-day hardening pass)
+## Status: mid-rebuild (Day 1-3 of a 7-day hardening pass)
 
 This repository previously contained **three separate, overlapping
 implementations** of the same idea (a Streamlit app, a synchronous FastAPI
@@ -70,18 +70,53 @@ and unaffected.
     `redis` container already existed in `requirements.txt` and
     `docker-compose.yml` before Day 2, with no application code ever
     calling either of them. This feature is the first real use of both.
-- **Automated tests:** 29 pytest tests covering auth, cross-user ownership
-  isolation, upload validation, the storage-outage failure path, and
-  rate-limiting (including a real Redis-outage simulation) (`backend/tests/`).
+- **Prometheus metrics (Day 3):** `GET /metrics` (unauthenticated, like
+  `/health` — Prometheus itself has no way to send a JWT) exposes real
+  domain metrics via `prometheus-client`, not just process/GC defaults:
+  `certifake_analyze_requests_total{outcome=...}` (`accepted` /
+  `rate_limited` / `storage_unavailable` / `broker_unavailable`),
+  `certifake_analyze_request_duration_seconds` (the synchronous part of
+  `/analyze` only — upload validation, S3 write, DB insert, Kafka
+  publish — not the async OCR/forensics that happen afterwards), and
+  `certifake_worker_events_processed_total` /
+  `certifake_worker_events_failed_total` (labeled `worker=ocr|forensics`).
+  See `backend/app/metrics.py`.
+  - Audit finding fixed: `monitoring/prometheus.yml` **already existed in
+    this repo before Day 3** and already targeted `api-gateway:8000`,
+    `worker-ocr:8000`, and `worker-forensics:8000` on the default
+    `/metrics` scrape path — but none of those three processes ever
+    exposed a `/metrics` endpoint or any HTTP listener at all (the two
+    workers are pure Kafka-consumer loops with no HTTP server). The
+    `prometheus` and `grafana` services in `docker-compose.yml` existed
+    too. All of it scraped nothing real until this change: both workers
+    now also run `prometheus_client.start_http_server(8000)` alongside
+    their consumer loop (see `backend/app/workers/ocr.py` and
+    `backend/app/workers/forensics.py`), so all three scrape targets in
+    the pre-existing config are real for the first time.
+- **CI (GitHub Actions, Day 3):** `.github/workflows/ci.yml` runs on every
+  push/PR to `main` — a `test` job (installs the same apt packages as
+  `backend/Dockerfile`, lints with `ruff`, runs `pip-audit` informationally,
+  runs the full pytest suite against isolated SQLite + fakeredis + faked
+  Kafka/S3, no external services required) and a `docker-build` job that
+  verifies `backend/Dockerfile` actually builds. It deliberately does
+  **not** attempt `docker compose up`: this project's compose stack
+  (Postgres + Redis + Zookeeper + Kafka + MinIO + 3 app services) was
+  judged too heavy to reliably boot inside a shared CI runner within this
+  7-day pass's scope — see "What is NOT implemented yet" below.
+- **Automated tests:** 33 pytest tests covering auth, cross-user ownership
+  isolation, upload validation, the storage-outage failure path,
+  rate-limiting (including a real Redis-outage simulation), and the new
+  `/metrics` endpoint (`backend/tests/`).
 
 ### What is NOT implemented yet (tracked for later days of this pass, not claimed as done)
 
 - Kafka consumer **retry/DLQ** handling — a worker crash mid-message today
   relies on Kafka's own consumer-group rebalance/redelivery; there is no
   explicit dead-letter queue or backoff policy yet.
-- Prometheus metrics are scraped per `monitoring/prometheus.yml`, but the
-  API does not yet expose a `/metrics` endpoint with real application
-  metrics (this is a config file pointing at nothing yet).
+- CI does not run the full `docker-compose` stack (Postgres + Kafka +
+  Zookeeper + MinIO + 3 app services) end-to-end, and Grafana dashboards
+  for the new Prometheus metrics have not been built — the metrics are
+  real and scrapeable, but nothing has been done yet to visualize them.
 - Real end-to-end integration test against actual Kafka/Postgres/MinIO
   containers (today's test suite mocks those integrations at the
   Python-call boundary, or in one case points the real client at a
@@ -183,8 +218,10 @@ docker-compose up --build
 ```
 
 This starts Postgres, Kafka (+ Zookeeper), MinIO, the API gateway, both
-workers, and Prometheus/Grafana (Prometheus currently has nothing real to
-scrape — see "What is NOT implemented yet" above).
+workers, and Prometheus/Grafana. As of Day 3, Prometheus has real targets
+to scrape (`api-gateway:8000`, `worker-ocr:8000`, `worker-forensics:8000`,
+all serving `/metrics`) — no Grafana dashboards have been built for them
+yet (see "What is NOT implemented yet" above).
 
 ### Tests
 
@@ -194,7 +231,7 @@ pip install -r requirements.txt
 pytest -v
 ```
 
-24/24 tests currently pass. They use a throwaway SQLite database and mock
+33/33 tests currently pass. They use a throwaway SQLite database and mock
 Kafka/S3 calls at the Python function boundary for most tests; one test
 suite (`test_failure_modes.py`) points the *real* Kafka/S3 client code at
 an intentionally unreachable address to verify the 503 failure-handling

@@ -7,7 +7,6 @@ graceful-degradation behavior added during Day 1 consolidation:
     orphaned "analyzing" DB row left behind
 These intentionally do NOT use the fake_kafka/fake_storage fixtures.
 """
-import os
 
 import pytest
 from fastapi.testclient import TestClient

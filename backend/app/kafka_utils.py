@@ -1,7 +1,8 @@
-import os
 import json
 import logging
-from confluent_kafka import Producer, Consumer, KafkaException
+import os
+
+from confluent_kafka import Consumer, KafkaException, Producer
 
 logger = logging.getLogger("certifake.kafka")
 

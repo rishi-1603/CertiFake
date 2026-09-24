@@ -1,6 +1,7 @@
-from PIL import Image
-import io
 import base64
+import io
+
+from PIL import Image
 
 try:
     import cv2
@@ -15,18 +16,18 @@ def _fallback_score(ocr_text: str, content_type: str):
     score = 45.0
     signals = []
     t = (ocr_text or "").lower()
-    
+
     if len((ocr_text or "").strip()) < 30:
         score -= 12
         signals.append("Weak OCR text")
-        
+
     if not any(k in t for k in ["certificate", "degree", "diploma", "university", "course", "completion"]):
         score -= 8
         signals.append("Missing expected certificate keywords")
-        
+
     if content_type == "application/pdf":
         score += 5
-        
+
     score = max(0, min(100, score))
     return score, signals, None
 
@@ -38,61 +39,61 @@ def ela_map_from_path(path: str):
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=90)
     buf.seek(0)
-    
+
     comp = Image.open(buf).convert("RGB")
     orig = np.array(img).astype(np.int16)
     cmp = np.array(comp).astype(np.int16)
     diff = np.abs(orig - cmp).astype(np.uint8)
-    
+
     gray = cv2.cvtColor(diff, cv2.COLOR_RGB2GRAY)
     return float(np.mean(gray)), gray
 
 def score_document(path: str, ocr_text: str, content_type: str):
     if not CV_AVAILABLE:
         return _fallback_score(ocr_text, content_type)
-        
+
     img = cv2.imread(path)
     if img is None:
         return _fallback_score(ocr_text, content_type)
-        
+
     # Resize for massive speedup
     h, w = img.shape[:2]
     if max(h, w) > 800:
         scale = 800.0 / max(h, w)
         img = cv2.resize(img, (int(w * scale), int(h * scale)))
-        
+
     signals = []
     score = 50.0
-    
+
     h, w = img.shape[:2]
     if h < 300 or w < 300:
         score -= 10
         signals.append("Low-resolution upload")
-        
+
     ela_mean, gray = ela_map_from_path(path)
     if ela_mean > 15:
         score -= 18
         signals.append("Compression inconsistency")
-        
+
     edges = cv2.Canny(img, 80, 200)
     edge_density = float((edges > 0).mean())
     if edge_density < 0.02:
         score -= 6
         signals.append("Unusual edge pattern")
-        
+
     text_len = len((ocr_text or "").strip())
     if text_len < 30:
         score -= 15
         signals.append("Weak OCR text")
-        
+
     lower = (ocr_text or "").lower()
     if not any(k in lower for k in ["certificate", "degree", "diploma", "issued", "university", "completion"]):
         score -= 7
         signals.append("Missing expected certificate keywords")
-        
+
     if content_type == "application/pdf":
         score += 5
-        
+
     score = max(0, min(100, score))
     return score, signals, gray
 

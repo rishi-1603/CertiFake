@@ -1,8 +1,9 @@
 import os
 import re
 from pathlib import Path
-from PIL import Image, ImageOps, ImageFilter
+
 import pytesseract
+from PIL import Image, ImageOps
 
 try:
     from pdf2image import convert_from_path
@@ -41,17 +42,17 @@ def run_ocr(path: str, content_type: str) -> str:
 def extract_fields(text: str):
     text = text or ""
     fields = {}
-    
+
     patterns = {
         "certificate_no": r"(certificate\s*(no|number|id)\s*[:\-]?\s*([A-Z0-9\-\/]+))",
         "name": r"(name\s*[:\-]?\s*([A-Za-z ,.'-]{3,}))",
         "date": r"(date\s*[:\-]?\s*([0-9A-Za-z,\-/ ]{4,}))",
         "institution": r"(university|college|institute|academy|school|board|organization\s*[:\-]?\s*([A-Za-z0-9 ,.\-]{3,}))"
     }
-    
+
     for key, pat in patterns.items():
         m = re.search(pat, text, re.IGNORECASE)
         if m:
             fields[key] = m.group(m.lastindex).strip() if m.lastindex else m.group(0).strip()
-            
+
     return fields
