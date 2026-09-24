@@ -5,7 +5,7 @@ or fabrication, using OCR text extraction and pixel-level forensic
 heuristics (not a trained ML classifier — see "How scoring works" below for
 exactly what is and isn't implemented).
 
-## Status: mid-rebuild (Day 1 of a 7-day hardening pass)
+## Status: mid-rebuild (Day 1-2 of a 7-day hardening pass)
 
 This repository previously contained **three separate, overlapping
 implementations** of the same idea (a Streamlit app, a synchronous FastAPI
@@ -57,9 +57,22 @@ and unaffected.
   hanging indefinitely or leaking a raw stack trace. Verified with a real
   (unreachable-endpoint) test in `backend/tests/test_failure_modes.py`, not
   just asserted in a comment.
-- **Automated tests:** 24 pytest tests covering auth, cross-user ownership
-  isolation, upload validation, and the storage-outage failure path
-  (`backend/tests/`).
+- **Rate limiting on `/analyze` (Day 2):** Redis-backed, fixed-window
+  (10 requests/60s per authenticated user, `app/rate_limit.py`) — the file
+  the previous line's Kafka/S3 pipeline fans out to two worker processes
+  is expensive enough that one scripted client hammering it could flood
+  the whole pipeline, not just slow down the API. Returns `429` with a
+  `Retry-After` header when exceeded. Deliberately fails *open* (allows
+  the request) if Redis itself is unreachable — documented as a
+  considered availability-over-throttling trade-off in the module
+  docstring, not an oversight.
+  - Audit finding fixed in passing: the `redis` package and a running
+    `redis` container already existed in `requirements.txt` and
+    `docker-compose.yml` before Day 2, with no application code ever
+    calling either of them. This feature is the first real use of both.
+- **Automated tests:** 29 pytest tests covering auth, cross-user ownership
+  isolation, upload validation, the storage-outage failure path, and
+  rate-limiting (including a real Redis-outage simulation) (`backend/tests/`).
 
 ### What is NOT implemented yet (tracked for later days of this pass, not claimed as done)
 
@@ -74,7 +87,6 @@ and unaffected.
   Python-call boundary, or in one case points the real client at a
   guaranteed-unreachable address to test the failure path — it does not
   spin up the full docker-compose stack).
-- Rate limiting / anti-abuse on `/analyze`.
 - Malware scanning of uploaded files (only type/format validation exists).
 - `k8s/deployment.yaml` still references a `your-dockerhub-user/...`
   placeholder image and has not been deployed anywhere real.

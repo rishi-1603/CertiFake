@@ -51,6 +51,7 @@ from app.auth import _get_db, login, register, require_user
 from app.config import settings
 from app.kafka_utils import get_kafka_producer, produce_event
 from app.models import Base, CertificateAnalysis, User, engine
+from app.rate_limit import check_rate_limit
 from app.report import create_report
 from app.s3_utils import StorageObjectNotFoundError, StorageUnavailableError, download_file_bytes, upload_file_bytes
 from app.schemas import (
@@ -121,11 +122,30 @@ def _get_owned_analysis_or_404(db: Session, analysis_id: str, user: User) -> Cer
     return analysis
 
 
+def _rate_limit_analyze(user: User = Depends(require_user)) -> None:
+    """Bounds how often one authenticated user can trigger /analyze --
+    see app/rate_limit.py for why this endpoint specifically, and why the
+    limiter fails open on a Redis outage. Scoped per-user (not per-IP):
+    the endpoint already requires auth, so the user id is a stable,
+    spoof-resistant key, unlike a client IP behind a shared NAT/proxy.
+    """
+    allowed, retry_after = check_rate_limit(
+        f"analyze:{user.id}", limit=settings.analyze_rate_limit_per_minute, window_seconds=60
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many analysis requests. Please wait before uploading again.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
 @app.post("/analyze", response_model=AnalyzeAcceptedResponse, status_code=202)
 async def analyze(
     file: UploadFile = File(...),
     user: User = Depends(require_user),
     db: Session = Depends(_get_db),
+    _rate_limited: None = Depends(_rate_limit_analyze),
 ):
     data = await file.read()
     # Real content validation (magic-byte sniffing, size limit, filename/path

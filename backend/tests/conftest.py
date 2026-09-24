@@ -17,6 +17,7 @@ Design notes:
 import os
 import tempfile
 
+import fakeredis
 import pytest
 
 _DB_FD, _DB_PATH = tempfile.mkstemp(suffix=".db")
@@ -27,6 +28,7 @@ os.environ["SECRET_KEY"] = "test-secret-key-do-not-use-in-production"
 from fastapi.testclient import TestClient  # noqa: E402
 
 import app.api as api_module  # noqa: E402
+import app.rate_limit as rate_limit_module  # noqa: E402
 from app.models import Base, engine  # noqa: E402
 
 
@@ -43,6 +45,18 @@ def _reset_db():
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _fake_redis(monkeypatch):
+    """No real Redis runs in the test sandbox, and rate-limit counters must
+    never leak between tests. A fresh fakeredis instance per test gives
+    every test isolated, deterministic counters without needing a live
+    Redis server -- same approach already used in the sibling DevTrack
+    project's test suite for the same reason."""
+    fake_client = fakeredis.FakeStrictRedis()
+    monkeypatch.setattr(rate_limit_module, "_client", fake_client)
+    yield fake_client
 
 
 @pytest.fixture

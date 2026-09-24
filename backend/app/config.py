@@ -13,6 +13,11 @@ class Settings(BaseSettings):
 
     allowed_origins: str = "http://127.0.0.1:8000,http://localhost:8000,http://localhost:5173"
 
+    # Used by app/rate_limit.py. Matches the REDIS_URL env var already set
+    # for every backend container in docker-compose.yml.
+    redis_url: str = "redis://localhost:6379/0"
+    analyze_rate_limit_per_minute: int = 10
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
