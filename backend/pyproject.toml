@@ -1,3 +1,23 @@
+[tool.pytest.ini_options]
+# Required, and the fix for a real CI failure caught on the first ever
+# GitHub Actions run of this repo (Day 3).
+#
+# Unlike the sibling DevTrack/Repay-Master projects, this backend has no
+# __init__.py anywhere -- not in app/, not in tests/. Under pytest's
+# default "prepend" import mode, pytest puts the first parent directory
+# WITHOUT an __init__.py onto sys.path. With __init__.py files present
+# (DevTrack/RepayMaster) that walk goes up to backend/, so `import app...`
+# resolves. With none present, it stops at backend/tests/ instead -- so
+# `import app.api` in tests/conftest.py fails with ModuleNotFoundError.
+#
+# It only ever worked locally because the tests were being run as
+# `python -m pytest`, which puts the current directory on sys.path as a
+# side effect; bare `pytest` (what CI runs) does not. pythonpath=["."]
+# makes the layout work under BOTH invocations, so this can't silently
+# depend on how someone happens to type the command again.
+pythonpath = ["."]
+testpaths = ["tests"]
+
 [tool.ruff]
 line-length = 110
 target-version = "py311"
