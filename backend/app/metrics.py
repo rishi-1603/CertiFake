@@ -41,7 +41,37 @@ worker_events_processed_total = Counter(
 
 worker_events_failed_total = Counter(
     "certifake_worker_events_failed_total",
-    "Kafka events that raised an exception during processing (the "
-    "analysis row is marked status=failed in the same code path).",
+    "Individual processing attempts that raised an exception. A single "
+    "event can increment this several times (once per failed attempt) "
+    "before it either succeeds on a retry or is dead-lettered -- compare "
+    "against certifake_worker_events_dead_lettered_total to tell the "
+    "difference between 'retried and recovered' and 'gave up'.",
+    ["worker"],
+)
+
+worker_event_attempts_total = Counter(
+    "certifake_worker_event_attempts_total",
+    "Retry attempts consumed, by attempt number (1 = first try). Lets you "
+    "see whether failures usually recover on attempt 2 or tend to exhaust "
+    "the budget.",
+    ["worker", "attempt"],
+)
+
+worker_events_dead_lettered_total = Counter(
+    "certifake_worker_events_dead_lettered_total",
+    "Events that exhausted every retry attempt and were published to the "
+    "dead-letter topic. Non-zero here means real data needs human "
+    "attention; the original event is preserved in the DLQ envelope for "
+    "inspection and manual replay.",
+    ["worker"],
+)
+
+worker_duplicate_events_skipped_total = Counter(
+    "certifake_worker_duplicate_events_skipped_total",
+    "Redelivered events skipped because that pipeline stage had already "
+    "completed for the analysis. Expected to be non-zero: manual offset "
+    "commit gives at-least-once delivery, so duplicates are normal and "
+    "this counter is the idempotency guard doing its job -- see "
+    "app/consumer.py.",
     ["worker"],
 )

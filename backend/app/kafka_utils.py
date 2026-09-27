@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from datetime import datetime, timezone
 
 from confluent_kafka import Consumer, KafkaException, Producer
 
@@ -62,11 +63,76 @@ def produce_event(producer, topic, key, value_dict) -> bool:
 
 
 def get_kafka_consumer(group_id, topics):
+    """Create a subscribed consumer with MANUAL offset commit.
+
+    `enable.auto.commit` is explicitly False. This is a correctness fix,
+    not a preference: confluent_kafka defaults auto-commit to TRUE with a
+    5-second interval, which commits offsets on a *timer* regardless of
+    whether the message was actually processed. Under that default a worker
+    that crashed (or hung, or raised) mid-message could already have had
+    that message's offset committed, so Kafka would never redeliver it --
+    the upload would sit in status="analyzing" forever and the event would
+    be silently, permanently lost. That is at-most-once delivery.
+
+    The README previously claimed a crashed worker "relies on Kafka's own
+    consumer-group rebalance/redelivery". With auto-commit on, that safety
+    net did not actually exist. Committing only after a message has been
+    handled (or dead-lettered) gives at-least-once delivery instead -- see
+    app/consumer.py, which owns the commit points.
+
+    At-least-once means duplicates become possible (a crash after
+    processing but before committing redelivers the same event), so
+    app/consumer.py also enforces per-stage idempotency. The two changes
+    are not independently optional.
+    """
     conf = {
         "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
         "group.id": group_id,
         "auto.offset.reset": "earliest",
+        "enable.auto.commit": False,
     }
     c = Consumer(conf)
     c.subscribe(topics)
     return c
+
+
+def dlq_topic_for(topic: str) -> str:
+    """Dead-letter topic name for a source topic."""
+    return f"{topic}.dlq"
+
+
+def publish_to_dlq(producer, source_topic, original_event, error, attempts) -> bool:
+    """Move a poison message to `<source_topic>.dlq`.
+
+    Called only after all in-process retry attempts are exhausted. The
+    envelope keeps the ORIGINAL event intact plus why/when it failed, so a
+    dead-lettered certificate can be inspected and replayed by hand rather
+    than being reduced to a log line nobody will find.
+
+    Returns whether the DLQ publish itself was confirmed. If it was not,
+    the caller must NOT commit the source offset -- otherwise the message
+    would vanish from both the source topic and the DLQ, which is the exact
+    failure mode this exists to prevent.
+    """
+    envelope = {
+        "source_topic": source_topic,
+        "original_event": original_event,
+        "error": str(error)[:2000],
+        "error_type": type(error).__name__,
+        "attempts": attempts,
+        "dead_lettered_at": datetime.now(timezone.utc).isoformat(),
+    }
+    key = original_event.get("analysis_id", "unknown") if isinstance(original_event, dict) else "unknown"
+    delivered = produce_event(producer, dlq_topic_for(source_topic), key, envelope)
+    if delivered:
+        logger.error(
+            "Message key=%s dead-lettered from topic=%s to topic=%s after %d attempt(s): %s",
+            key, source_topic, dlq_topic_for(source_topic), attempts, envelope["error"],
+        )
+    else:
+        logger.critical(
+            "Message key=%s exhausted %d attempt(s) on topic=%s AND could not be dead-lettered "
+            "(DLQ publish unconfirmed). Offset will not be committed, so it will be redelivered.",
+            key, attempts, source_topic,
+        )
+    return delivered

@@ -5,7 +5,7 @@ or fabrication, using OCR text extraction and pixel-level forensic
 heuristics (not a trained ML classifier — see "How scoring works" below for
 exactly what is and isn't implemented).
 
-## Status: mid-rebuild (Day 1-3 of a 7-day hardening pass)
+## Status: mid-rebuild (Day 1-4 of a 7-day hardening pass)
 
 This repository previously contained **three separate, overlapping
 implementations** of the same idea (a Streamlit app, a synchronous FastAPI
@@ -103,16 +103,64 @@ and unaffected.
   (Postgres + Redis + Zookeeper + Kafka + MinIO + 3 app services) was
   judged too heavy to reliably boot inside a shared CI runner within this
   7-day pass's scope — see "What is NOT implemented yet" below.
-- **Automated tests:** 33 pytest tests covering auth, cross-user ownership
+- **Reliable Kafka consumption (Day 4):** bounded retry with exponential
+  backoff + full jitter, a real dead-letter topic, manual offset commits,
+  and per-stage idempotency — all in one shared loop
+  (`backend/app/consumer.py`) used by both workers, replacing two
+  hand-rolled copies of the same poll loop.
+  - **Manual commit is a correctness fix, not a tuning preference.**
+    `confluent_kafka` defaults `enable.auto.commit` to **true** on a
+    5-second timer, committing offsets regardless of whether the message was
+    actually processed. A worker that crashed or raised mid-message could
+    already have had that offset committed, so Kafka would never redeliver
+    it: the upload would sit at `status="analyzing"` forever and the event
+    was silently, permanently lost. That is at-most-once delivery.
+  - This means an earlier claim in this README was **wrong**, and is
+    corrected here rather than quietly deleted: it said a crashed worker
+    "relies on Kafka's own consumer-group rebalance/redelivery". With
+    auto-commit enabled, that safety net did not exist.
+  - Manual commit gives **at-least-once** delivery, which makes duplicate
+    delivery normal (a crash after processing but before committing
+    redelivers the same event). So each worker also checks whether its own
+    stage already ran — OCR skips when `ocr_text` is populated, forensics
+    skips when `status == "completed"` — and reports the event as a
+    duplicate instead of redoing expensive work and publishing a second
+    downstream event. Retrying and deduplicating are not independently
+    optional; the first is unsafe without the second.
+  - Exhausted messages go to `<topic>.dlq` with the **original event
+    preserved intact** plus error, error type, attempt count and timestamp,
+    so a dead-lettered certificate can be inspected and replayed by hand
+    rather than reduced to a log line nobody will find.
+  - Commit ordering is deliberate: the offset is committed after success,
+    after a duplicate, or after a *confirmed* DLQ publish — but **not** when
+    the DLQ publish itself fails. Committing then would lose the message
+    from both the source topic and the DLQ, which is the precise failure
+    this exists to prevent. Both orderings are tested.
+  - A worker now marks its analysis `failed` only *once retries are
+    exhausted*, not on the first exception, so a transient MinIO or database
+    blip is no longer permanently fatal to a certificate.
+  - **Operational dependency, stated explicitly:** the `.dlq` topics are not
+    pre-created anywhere — this relies on the broker's
+    `auto.create.topics.enable` (Kafka's default, and what
+    `docker-compose.yml` leaves unset). If a production broker disables
+    auto-creation, the DLQ publish fails, and because the offset is then
+    deliberately *not* committed, that message is redelivered indefinitely
+    rather than lost. That is the intended bias (endless retry beats silent
+    data loss), but it means DLQ topics should be provisioned explicitly in
+    any deployment with auto-create off.
+  - New Prometheus counters make this observable rather than inferable:
+    `certifake_worker_event_attempts_total{attempt=...}`,
+    `certifake_worker_events_dead_lettered_total`, and
+    `certifake_worker_duplicate_events_skipped_total` (non-zero here is
+    *expected* — it is the idempotency guard doing its job).
+- **Automated tests:** 50 pytest tests covering auth, cross-user ownership
   isolation, upload validation, the storage-outage failure path,
-  rate-limiting (including a real Redis-outage simulation), and the new
-  `/metrics` endpoint (`backend/tests/`).
+  rate-limiting (including a real Redis-outage simulation), the `/metrics`
+  endpoint, and the consumer loop's retry / DLQ / commit-ordering /
+  idempotency guarantees (`backend/tests/`).
 
 ### What is NOT implemented yet (tracked for later days of this pass, not claimed as done)
 
-- Kafka consumer **retry/DLQ** handling — a worker crash mid-message today
-  relies on Kafka's own consumer-group rebalance/redelivery; there is no
-  explicit dead-letter queue or backoff policy yet.
 - CI does not run the full `docker-compose` stack (Postgres + Kafka +
   Zookeeper + MinIO + 3 app services) end-to-end, and Grafana dashboards
   for the new Prometheus metrics have not been built — the metrics are
@@ -231,7 +279,7 @@ pip install -r requirements.txt
 pytest -v
 ```
 
-33/33 tests currently pass. They use a throwaway SQLite database and mock
+50/50 tests currently pass. They use a throwaway SQLite database and mock
 Kafka/S3 calls at the Python function boundary for most tests; one test
 suite (`test_failure_modes.py`) points the *real* Kafka/S3 client code at
 an intentionally unreachable address to verify the 503 failure-handling
