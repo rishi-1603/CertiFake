@@ -59,6 +59,71 @@ jobs:
           SECRET_KEY: ci-only-secret-not-used-anywhere-real
         run: pytest tests/ -v
 
+  # ===========================================================================
+  # Deployment-config validation.
+  #
+  # WHY THIS JOB EXISTS: on 2026-09-11 MinIO deleted `minio/minio` from Docker
+  # Hub. This repo's compose file referenced it, and api-gateway waited on
+  # `minio: condition: service_healthy`, so a fresh `docker compose up` failed
+  # at the pull step before any container started. It stayed broken for 17 days.
+  # Nothing caught it because:
+  #   - `docker-compose config` validates SYNTAX, not whether an image exists;
+  #   - the k8s manifests passed kubeconform -strict while referencing
+  #     `your-dockerhub-user/certifake-api:latest`, a Secret that was never
+  #     defined, and only one of the two workers;
+  #   - no Docker daemon was available where this was developed, so the stack
+  #     was never actually brought up.
+  #
+  # All three of those checks run below. None of them needs a Docker daemon:
+  # compose validation and kubeconform are client-side, and image existence is
+  # answered by the registry v2 API anonymously.
+  # ===========================================================================
+  config-validation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # A real compose file needs SECRET_KEY to interpolate; the value is
+      # irrelevant here because nothing is started, only parsed.
+      - name: Validate docker-compose.yml
+        env:
+          SECRET_KEY: ci-validation-only-not-a-real-secret
+        run: |
+          docker compose version
+          docker compose config --quiet
+          echo "compose config: valid"
+
+      - name: Validate k8s manifests (kubeconform, strict)
+        run: |
+          curl -sSL -o /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar xzf /tmp/kubeconform.tar.gz -C /tmp
+          # -strict rejects unknown/misspelled fields, not just malformed YAML.
+          /tmp/kubeconform -strict -summary -verbose k8s/deployment.yaml
+
+      - name: Check every referenced image still exists in its registry
+        run: |
+          # ghcr.io/rishi-1603/* is exempted because those images are produced
+          # by the docker-publish job in THIS workflow: they cannot exist before
+          # the first successful publish, so failing on them would be circular.
+          # The exemption is explicit on the command line rather than hidden in
+          # the script, so it is visible in the logs and in review.
+          python3 scripts/check_images.py \
+            --allow-missing ghcr.io/rishi-1603/ \
+            docker-compose.yml \
+            k8s/deployment.yaml \
+            backend/Dockerfile
+
+      - name: Cross-file consistency (compose <-> prometheus <-> k8s)
+        run: python3 scripts/check_config_consistency.py
+
   docker-build:
     # Verifies backend/Dockerfile actually builds -- this project's image
     # could not be built or run in the sandbox this was developed in (no
@@ -80,3 +145,39 @@ jobs:
 
       - name: Build image
         run: docker build -t certifake-backend:ci backend
+
+  # Publishes the single backend image that all three workloads run
+  # (api-gateway, worker-ocr, worker-forensics are the same image with
+  # different commands -- same as docker-compose.yml, where all three services
+  # share `build: ./backend`). This is what makes k8s/deployment.yaml point at
+  # a real artifact instead of a placeholder repository that does not exist.
+  docker-publish:
+    runs-on: ubuntu-latest
+    needs: docker-build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/certifake-backend
+          IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          docker build -t "$IMAGE:latest" -t "$IMAGE:${{ github.sha }}" backend
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:${{ github.sha }}"
+          echo "Published $IMAGE:latest and :${{ github.sha }}"
+          echo "NOTE: GHCR packages created via GITHUB_TOKEN may default to"
+          echo "private. If so, the image is not anonymously pullable and"
+          echo "k8s/deployment.yaml would need imagePullSecrets -- see README."

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:15-alpine
@@ -23,6 +21,22 @@ services:
       - "6379:6379"
     volumes:
       - redisdata:/data
+    # redis-cli verified present at /usr/local/bin/redis-cli in this exact
+    # image (redis:7-alpine, amd64 sha256:ca0acbb1...) by listing its layer
+    # contents -- not assumed. That matters because a healthcheck naming a
+    # binary the image lacks would mark it permanently unhealthy, and any
+    # `condition: service_healthy` dependent would then never start.
+    #
+    # Note the API only needs Redis for rate limiting, which fails OPEN on
+    # RedisError (see backend/app/rate_limit.py), so this dependency is about
+    # startup ordering rather than correctness.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.3.0
@@ -46,8 +60,44 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
 
+  # ---------------------------------------------------------------------------
+  # WHY THIS IS NOT `minio/minio` ANY MORE
+  #
+  # MinIO deleted `minio/minio` (and `minio/mc`) from Docker Hub on
+  # 2026-09-11, having gone source-only in Oct 2025 and archived the community
+  # repo in Feb 2026. The repository now returns "object not found" from the
+  # Hub API and a pull-denied 401 from the registry -- and quay.io/minio/minio
+  # and bitnami/minio are gone too, so the usual fallbacks do not work.
+  #
+  # The consequence was total, not cosmetic: api-gateway below waits on
+  # `minio: condition: service_healthy`, so a fresh `docker compose up` failed
+  # at the image-pull step before a single container started. It sat broken for
+  # 17 days because nothing checked -- `docker-compose config` validates
+  # syntax, not whether an image still exists, and no Docker daemon was
+  # available to discover it by running the stack. scripts/check_images.py now
+  # closes that gap in CI by resolving every reference against its registry.
+  #
+  # REPLACEMENT: Chainguard's continuously rebuilt, CVE-patched MinIO image.
+  # Chosen over the alternatives because it is vendor-maintained rather than a
+  # single-maintainer fork, it is still the same software (so MINIO_* env vars,
+  # the S3 API and the app's boto3/minio client contract are unchanged), and it
+  # addresses the security angle directly -- the final public MinIO image
+  # shipped with a known high-severity CVE and no upgrade path.
+  #
+  # Pinned by digest rather than tag: Chainguard rebuilds `latest` continuously,
+  # and an unpinned tag is exactly the failure mode this repo already hit once
+  # (Day 3: `python:3.11-slim` silently moved bookworm -> trixie and broke the
+  # build). Verified resolvable 2026-09-28. To update, re-resolve:
+  #   curl -sI -H "Authorization: Bearer $(curl -s \
+  #     'https://cgr.dev/token?service=cgr.dev&scope=repository:chainguard/minio:pull' \
+  #     | jq -r .token)" -H 'Accept: application/vnd.oci.image.index.v1+json' \
+  #     https://cgr.dev/v2/chainguard/minio/manifests/latest \
+  #     | grep -i docker-content-digest
+  # ---------------------------------------------------------------------------
   minio:
-    image: minio/minio
+    image: cgr.dev/chainguard/minio@sha256:6a1d0b45c8669726bba580ced0bfa4cb9fdeed1ed636dfabd81d1577beb6937b
+    # Entrypoint is ["/usr/bin/minio"] (read from the image config blob), so
+    # these args are passed straight through, same as before.
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -57,27 +107,58 @@ services:
       - "9001:9001"
     volumes:
       - miniodata:/data
+    # The image runs as UID 65532 (`nonroot`) by default. That is kept rather
+    # than overridden with `user: root`: /data in the image is drwxrwxrwx, and
+    # Docker seeds a fresh named volume with the image's permissions, so the
+    # non-root user can write to it. CAVEAT -- a `miniodata` volume created by
+    # the OLD root-running minio/minio image is root-owned, and this container
+    # would not be able to write it; delete the volume or set `user: root` if
+    # migrating an existing one.
+    #
+    # Healthcheck uses `mc`, NOT `curl`: this image contains /usr/bin/mc,
+    # /usr/bin/sh and /usr/bin/bash but NO curl, wget or nc (verified by
+    # listing all 11 layer tarballs). The previous curl-based check would have
+    # failed permanently here, marking minio unhealthy and blocking
+    # api-gateway forever -- a silent regression from swapping the image alone.
+    # `mc alias set` authenticates against the server, so success proves the S3
+    # API is accepting requests, not merely that a port is open.
+    # `$$` is required so compose passes a literal $ through to the container
+    # instead of interpolating from the host environment at parse time.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
+      test:
+        [
+          "CMD-SHELL",
+          "mc alias set local http://127.0.0.1:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD >/dev/null 2>&1",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus
+    # Was unpinned (`prom/prometheus` == `:latest`). Pinning is not a version
+    # CHANGE here -- `latest` already resolves to the v3.x line -- it just makes
+    # the resolved version explicit so the stack cannot shift underneath the
+    # repo with no commit. Both tags verified resolvable 2026-09-28.
+    # monitoring/prometheus.yml uses only `global` + `scrape_configs`, which is
+    # unchanged between Prometheus v2 and v3.
+    image: prom/prometheus:v3.15.0
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
     ports:
       - "9090:9090"
+    restart: unless-stopped
 
   grafana:
-    image: grafana/grafana
+    image: grafana/grafana:13.0.9
     ports:
       - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     depends_on:
       - prometheus
+    restart: unless-stopped
 
   api-gateway:
     build: 
@@ -100,10 +181,43 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # service_started, deliberately NOT service_healthy: the consumer loop is
+      # self-healing (poll() returns None while the broker is unavailable and
+      # broker/partition errors are logged rather than fatal -- see
+      # backend/app/consumer.py), and confluent-kafka reconnects on its own
+      # background thread. Gating on a Kafka healthcheck would mean trusting a
+      # probe binary I cannot verify exists inside cp-kafka; if it did not, the
+      # broker would be marked permanently unhealthy and THIS service would
+      # never start -- turning a stack that recovers by itself into one that is
+      # dead on arrival. Correct-by-construction beats plausible-but-unverified.
       kafka:
         condition: service_started
       minio:
         condition: service_healthy
+      # Redis was missing from this list even though REDIS_URL is set above and
+      # used for rate limiting on /analyze. It is ordering-only, not correctness:
+      # app/rate_limit.py fails OPEN on redis.RedisError, so the API still serves
+      # requests if Redis is down (it just stops rate limiting).
+      redis:
+        condition: service_healthy
+    # Python, not curl: backend/Dockerfile installs tesseract, libgl1,
+    # libglib2.0-0t64, poppler-utils and libmagic1t64 on python:3.11-slim-trixie
+    # -- none of which provide curl, wget or nc. A curl-based healthcheck here
+    # would fail permanently and (once anything depends on this service being
+    # healthy) wedge the stack. `python` is guaranteed by the base image.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+    restart: unless-stopped
 
   worker-ocr:
     build: 
@@ -112,7 +226,11 @@ services:
     command: python -m app.workers.ocr
     environment:
       - DATABASE_URL=postgresql://certifake:password@postgres:5432/certifake_db
-      - REDIS_URL=redis://redis:6379/0
+      # REDIS_URL deliberately NOT set on the workers: only app/api.py imports
+      # app/rate_limit.py, so only the gateway talks to Redis. This variable
+      # used to be set on both workers, implying a dependency that does not
+      # exist in code -- and it would have justified adding a pointless
+      # depends_on edge for it. Removing dead config beats documenting it.
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - MINIO_ENDPOINT=http://minio:9000
       - MINIO_ACCESS_KEY=minioadmin
@@ -121,7 +239,32 @@ services:
       postgres:
         condition: service_healthy
       kafka:
-        condition: service_started
+        condition: service_started   # see api-gateway: self-healing consumer loop
+      # Was missing: this worker downloads the uploaded document from MinIO
+      # (app/s3_utils.download_file_bytes) yet never declared the dependency, so
+      # it could start before MinIO was accepting requests. Unlike Kafka, an S3
+      # fetch is a one-shot request with no built-in reconnect loop, so this one
+      # genuinely needs ordering.
+      minio:
+        condition: service_healthy
+    # Workers expose a metrics-only HTTP server on :8000 -- started BEFORE the
+    # never-returning consume loop in the `__main__` block of
+    # app/workers/ocr.py, and `python -m app.workers.ocr` sets __name__ to
+    # "__main__", so the port really is live under this command. Same image as
+    # api-gateway, so Python rather than curl for the same reason.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/metrics', timeout=3).status == 200 else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+    restart: unless-stopped
 
   worker-forensics:
     build: 
@@ -130,7 +273,7 @@ services:
     command: python -m app.workers.forensics
     environment:
       - DATABASE_URL=postgresql://certifake:password@postgres:5432/certifake_db
-      - REDIS_URL=redis://redis:6379/0
+      # REDIS_URL deliberately NOT set -- see worker-ocr above.
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - MINIO_ENDPOINT=http://minio:9000
       - MINIO_ACCESS_KEY=minioadmin
@@ -139,7 +282,25 @@ services:
       postgres:
         condition: service_healthy
       kafka:
-        condition: service_started
+        condition: service_started   # see api-gateway: self-healing consumer loop
+      # This worker both downloads the source document AND uploads the generated
+      # heatmap back (app/s3_utils.download_file_bytes + upload_file_bytes), so
+      # it has the strongest MinIO dependency of the three services.
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/metrics', timeout=3).status == 200 else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+    restart: unless-stopped
 
 volumes:
   pgdata:

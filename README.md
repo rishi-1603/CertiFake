@@ -5,7 +5,7 @@ or fabrication, using OCR text extraction and pixel-level forensic
 heuristics (not a trained ML classifier — see "How scoring works" below for
 exactly what is and isn't implemented).
 
-## Status: mid-rebuild (Day 1-4 of a 7-day hardening pass)
+## Status: mid-rebuild (Day 1-5 of a 7-day hardening pass)
 
 This repository previously contained **three separate, overlapping
 implementations** of the same idea (a Streamlit app, a synchronous FastAPI
@@ -153,7 +153,147 @@ and unaffected.
     `certifake_worker_events_dead_lettered_total`, and
     `certifake_worker_duplicate_events_skipped_total` (non-zero here is
     *expected* — it is the idempotency guard doing its job).
-- **Automated tests:** 50 pytest tests covering auth, cross-user ownership
+- **Deployment config made real and self-checking (Day 5):** the compose
+  stack and k8s manifests had never been validated by anything — no Docker
+  daemon existed where this was developed — and that hid a stack-breaking
+  defect for 17 days.
+  - **`minio/minio` no longer exists, and the whole stack was down because of
+    it.** MinIO went source-only in Oct 2025, archived the community repo in
+    Feb 2026, and on **2026-09-11 deleted `minio/minio` and `minio/mc` from
+    Docker Hub** (quay.io and `bitnami/minio` are gone too). Because
+    `api-gateway` waited on `minio: condition: service_healthy`, a fresh
+    `docker compose up` failed at the *image-pull* step before a single
+    container started. Nothing caught it: `docker-compose config` validates
+    syntax, not whether an image still exists.
+    Replaced with `cgr.dev/chainguard/minio`, **pinned by digest**
+    (`sha256:6a1d0b45…`) rather than tag — an unpinned tag is the same failure
+    class as the Day-3 `python:3.11-slim` incident. Chosen because it is
+    vendor-maintained rather than a single-maintainer fork, is still the same
+    software (so `MINIO_*` env vars and the app's S3 client contract are
+    unchanged), and addresses the security angle directly: the final public
+    MinIO image shipped with a known high-severity CVE and no upgrade path.
+  - **The healthcheck had to change too, and this is the part that is easy to
+    get wrong.** The old check was `curl -f …/minio/health/live`. That image
+    contains `/usr/bin/mc`, `sh` and `bash` but **no curl, wget or nc** —
+    established by downloading and listing all 11 layer tarballs, not guessed.
+    Swapping the image alone would have left a healthcheck that fails forever,
+    marking minio permanently unhealthy and wedging `api-gateway` behind it: a
+    silent regression traded for a loud one. The check is now
+    `mc alias set local …`, which authenticates against the server, so success
+    proves the S3 API accepts requests rather than merely that a port is open.
+    Its `$$VAR` escaping is deliberate — verified that a single `$` is
+    interpolated from the *host* at parse time and collapses the command to
+    `mc alias set local http://127.0.0.1:9000  ` with empty credentials.
+  - `/data` in the replacement image is `drwxrwxrwx` and it runs as UID 65532
+    (`nonroot`), both read from the image config blob. Docker seeds a fresh
+    named volume with the image's permissions, so non-root works and
+    `user: root` is **not** added. Caveat, stated rather than hidden: a
+    `miniodata` volume created by the old root-running image is root-owned and
+    would need deleting or `user: root` to migrate.
+  - **Missing dependency edges.** Both workers set `MINIO_*` and download (and
+    for forensics, upload) objects, yet neither declared `depends_on: minio`,
+    so they could start before object storage was accepting requests. Unlike
+    Kafka, an S3 fetch is one-shot with no reconnect loop, so this one
+    genuinely needs ordering. `api-gateway` set `REDIS_URL` with no redis edge
+    either — added, though it is ordering-only, since `app/rate_limit.py` fails
+    **open** on `redis.RedisError`.
+  - **Dead config removed rather than papered over.** Both workers also set
+    `REDIS_URL`, but only `app/api.py` imports `app/rate_limit.py` — the
+    workers never touch Redis. The variable was removed instead of adding a
+    dependency edge to justify it.
+  - **A Kafka readiness race was suspected and then disproved.** `kafka` and
+    `zookeeper` have no healthchecks, so dependents use
+    `condition: service_started`. That looks wrong, but the consumer loop is
+    self-healing: `poll()` returns `None` while the broker is unavailable,
+    broker/partition errors are logged rather than fatal
+    (`backend/app/consumer.py`), and confluent-kafka reconnects on its own
+    background thread. Adding a Kafka healthcheck would mean trusting a probe
+    binary nobody has verified exists inside `cp-kafka`; if absent, the broker
+    would be marked permanently unhealthy and every dependent would never
+    start — converting a stack that recovers by itself into one dead on
+    arrival. Left as `service_started`, deliberately.
+  - Pinned `prom/prometheus:v3.15.0` and `grafana/grafana:13.0.9` (both were
+    `:latest`), removed the obsolete top-level `version:` key, and added
+    healthchecks plus `restart: unless-stopped`. App-service healthchecks use
+    **Python, not curl**: `backend/Dockerfile` installs tesseract, libgl1,
+    libglib2.0-0t64, poppler-utils and libmagic1t64 on
+    `python:3.11-slim-trixie`, none of which provide curl.
+  - **k8s manifests rewritten.** They previously passed `kubeconform -strict`
+    while shipping `image: your-dockerhub-user/certifake-api:latest` (a
+    repository that does not exist), referencing a Secret defined nowhere, and
+    deploying **only one of the two workers** — a validator cannot see a
+    placeholder or an omission. Now: one real image
+    (`ghcr.io/rishi-1603/certifake-backend`, published by CI) serving all three
+    workloads with different commands, exactly as compose does; the missing
+    `worker-forensics` Deployment added; liveness/readiness probes on `/health`
+    (API) and `/metrics` (workers, which really do serve that port — the
+    metrics server starts *before* the never-returning consume loop in each
+    worker's `__main__` block); `securityContext` dropping all capabilities;
+    `Service` type changed `LoadBalancer` → `ClusterIP` because provisioning a
+    public cloud LB is a provider-specific cost/security decision a template
+    should not assume.
+  - **Two sources of truth for replica count, fixed.** The OCR Deployment set
+    `replicas: 3` while its HPA declared `minReplicas: 2`, so every
+    `kubectl apply` would reset the scaled count. `replicas` is now omitted
+    from HPA-managed Deployments. CPU-based autoscaling is kept and is
+    defensible *here specifically*: OCR shells out to `tesseract`, so the
+    workload is CPU-bound and utilisation tracks load. For an I/O-bound
+    consumer the right signal is lag (KEDA), which is deliberately **not**
+    added — no cluster exists to validate it against, so it would be
+    technology for its own sake.
+  - **Three new CI checks, none of which needs a Docker daemon:**
+    `docker compose config` (syntax/interpolation), `kubeconform -strict`
+    (real Kubernetes schemas), and `scripts/check_images.py`, which resolves
+    every image reference — including Dockerfile `FROM` lines — against its
+    registry via the anonymous v2 API and fails if any can no longer be
+    pulled. **That last check is the one that would have caught the MinIO
+    deletion on the day it happened.** Docker Hub reports a nonexistent
+    repository with the same 401 it uses for a private one, so the script
+    distinguishes them by whether the token service granted any pull scope —
+    a heuristic validated against known-good (postgres, redis, cp-kafka) and
+    known-bad (`minio/minio`, `bitnami/minio`) controls.
+  - `scripts/check_config_consistency.py` asserts the files *agree*, which is
+    the drift no single-file validator can see: k8s deploys exactly the app
+    workloads compose builds; every HPA targets a Deployment that exists and
+    does not fight it over `replicas`; a service that sets `MINIO_*`/`REDIS_URL`/
+    `DATABASE_URL`/`KAFKA_*` has the matching `depends_on` edge; every
+    Prometheus target is a real compose service that mentions that port; no
+    placeholder image strings; and every Secret key the manifests reference is
+    documented below. It found the two missing worker dependency edges and the
+    undocumented Secret on its first run.
+
+### Kubernetes (`k8s/deployment.yaml`) — what is and is not true
+
+**Never applied to a live cluster.** Verified: schema validity
+(`kubeconform -strict`, in CI and locally) and cross-file consistency with the
+compose stack. Not verified: that pods start, that probes pass, that the HPAs
+scale, or that Kafka/Postgres/Redis/MinIO are reachable in-cluster.
+
+Postgres, Redis, Kafka and MinIO are **assumed external** — these manifests do
+not deploy them, and the hostnames used (`kafka-service`, `redis-service`,
+`minio-service`) must exist in the namespace. Standing up a broker and a
+database in-cluster is a different project with different operational stakes.
+
+The Secret is deliberately **not** committed (a repo should never carry
+credentials, even fake-looking ones). Create it before applying:
+
+```bash
+kubectl create secret generic certifake-secrets \
+  --from-literal=database-url='postgresql://USER:PASS@HOST:5432/certifake_db' \
+  --from-literal=secret-key='<a real random value>' \
+  --from-literal=minio-access-key='<access key>' \
+  --from-literal=minio-secret-key='<secret key>'
+```
+
+Those four keys (`database-url`, `secret-key`, `minio-access-key`,
+`minio-secret-key`) are exactly the ones the manifests reference —
+`check_config_consistency.py` fails CI if they drift apart.
+
+```bash
+kubectl apply -f k8s/deployment.yaml
+```
+
+### Automated tests: 50 pytest tests covering auth, cross-user ownership
   isolation, upload validation, the storage-outage failure path,
   rate-limiting (including a real Redis-outage simulation), the `/metrics`
   endpoint, and the consumer loop's retry / DLQ / commit-ordering /
@@ -171,8 +311,16 @@ and unaffected.
   guaranteed-unreachable address to test the failure path — it does not
   spin up the full docker-compose stack).
 - Malware scanning of uploaded files (only type/format validation exists).
-- `k8s/deployment.yaml` still references a `your-dockerhub-user/...`
-  placeholder image and has not been deployed anywhere real.
+- `k8s/deployment.yaml` has **never been applied to a live cluster**. It is
+  schema-validated and internally consistent (see Day 5 below), but pod
+  startup, probe behaviour, HPA scaling and reachability of
+  Kafka/Postgres/Redis/MinIO from inside a cluster are all unverified, and
+  no cluster was available to verify them.
+- Nothing publishes a container image to a registry **yet** — the Day-5
+  `docker-publish` CI job is the first attempt, and whether the GHCR package
+  it creates is publicly pullable (vs. private, which would need
+  `imagePullSecrets` in the k8s manifests) is recorded in the README once CI
+  has actually run it.
 
 ### How scoring works (exactly, not aspirationally)
 

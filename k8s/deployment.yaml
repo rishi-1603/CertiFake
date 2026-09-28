@@ -1,9 +1,57 @@
+# =============================================================================
+# READ THIS BEFORE APPLYING ANYTHING
+#
+# These manifests have NEVER been applied to a live Kubernetes cluster. What
+# HAS been verified, and by what:
+#
+#   VERIFIED   Schema validity against real Kubernetes API schemas, in CI and
+#              locally, via kubeconform in -strict mode (catches unknown or
+#              misspelled fields, not just malformed YAML).
+#   VERIFIED   Every image reference resolves in its registry -- see
+#              scripts/check_images.py, also run in CI.
+#   NOT VERIFIED  That a pod actually starts, that the probes pass, that the
+#              HPA scales, or that these services can reach Kafka/Postgres/
+#              Redis/MinIO. None of that can be checked without a cluster, and
+#              none of it was checked.
+#
+# Note that schema validity is a weak guarantee, and this file used to be a
+# good example of why: the previous version passed kubeconform -strict while
+# shipping `image: your-dockerhub-user/certifake-api:latest` (a repository that
+# does not exist), referencing a Secret that was never defined anywhere, and
+# deploying only one of the two workers. A validator cannot see an omission or
+# a placeholder. Everything below was therefore checked against the compose
+# stack, which is the working reference implementation.
+#
+# ASSUMED EXTERNAL: Postgres, Redis, Kafka and MinIO are NOT deployed here.
+# They must already exist in the namespace (or be reachable) under the
+# hostnames used below. Standing up a broker and a database in-cluster is a
+# different project with different operational stakes, and pretending these
+# manifests do it would be the exact "buzzword skeleton" they are meant to
+# replace.
+#
+# REQUIRED BEFORE APPLYING -- the Secret is deliberately NOT committed:
+#   kubectl create secret generic certifake-secrets \
+#     --from-literal=database-url='postgresql://USER:PASS@HOST:5432/certifake_db' \
+#     --from-literal=secret-key='<a real random value>'
+# =============================================================================
+---
+# One image serves all three workloads: api-gateway, worker-ocr and
+# worker-forensics are the SAME backend image with different commands, exactly
+# as in docker-compose.yml (all three services share `build: ./backend`).
+# Published by the CI `docker-publish` job on every push to main.
+#
+# `:latest` + imagePullPolicy: Always is a development convenience, not a
+# deployment recommendation. CI also pushes an immutable tag per commit
+# (`:<git-sha>`); a real deployment should pin that, because `:latest` means a
+# redeploy can silently pick up a different build than the one you tested --
+# the same class of problem as an unpinned base image.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: certifake-api-gateway
   labels:
     app: api-gateway
+    component: api
 spec:
   replicas: 2
   selector:
@@ -13,48 +61,121 @@ spec:
     metadata:
       labels:
         app: api-gateway
+        component: api
     spec:
       containers:
-      - name: api-gateway
-        image: your-dockerhub-user/certifake-api:latest
-        ports:
-        - containerPort: 8000
-        env:
-        - name: DATABASE_URL
-          valueFrom:
-            secretKeyRef:
-              name: certifake-secrets
-              key: database-url
-        - name: KAFKA_BOOTSTRAP_SERVERS
-          value: "kafka-service:9092"
-        resources:
-          requests:
-            cpu: "250m"
-            memory: "256Mi"
-          limits:
-            cpu: "500m"
-            memory: "512Mi"
+        - name: api-gateway
+          image: ghcr.io/rishi-1603/certifake-backend:latest
+          imagePullPolicy: Always
+          command: ["uvicorn"]
+          args: ["app.api:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: certifake-secrets
+                  key: database-url
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: certifake-secrets
+                  key: secret-key
+            # These three must match whatever provides Kafka/Redis/MinIO in the
+            # namespace; see ASSUMED EXTERNAL above.
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka-service:9092"
+            - name: REDIS_URL
+              value: "redis://redis-service:6379/0"
+            - name: MINIO_ENDPOINT
+              value: "http://minio-service:9000"
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: certifake-secrets
+                  key: minio-access-key
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: certifake-secrets
+                  key: minio-secret-key
+          # Both probes hit GET /health, which exists in app/api.py and returns
+          # 200 unconditionally. Honest caveat: because it does not touch the
+          # database, Kafka or MinIO, a pod can pass readiness while its
+          # dependencies are unreachable. A deeper readiness check would be
+          # better; that endpoint does not exist yet, and inventing one just to
+          # make this manifest look thorough is not the point.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: api-gateway-service
+  labels:
+    app: api-gateway
 spec:
-  type: LoadBalancer
+  # ClusterIP, not LoadBalancer: exposing a public cloud load balancer is a
+  # provider-specific cost and security decision, not something a template
+  # should assume. Change deliberately when deploying somewhere real.
+  type: ClusterIP
   ports:
-  - port: 80
-    targetPort: 8000
+    - name: http
+      port: 80
+      targetPort: http
   selector:
     app: api-gateway
 ---
+# ---------------------------------------------------------------------------
+# OCR worker.
+#
+# `replicas` is intentionally OMITTED: the HPA below owns this Deployment's
+# replica count, and setting it here would make every `kubectl apply` fight the
+# autoscaler by resetting the count. The previous version set replicas: 3 while
+# the HPA declared minReplicas: 2 -- two sources of truth disagreeing, with the
+# HPA winning immediately and the field being dead config.
+#
+# The worker's only HTTP surface is the metrics server that app/workers/ocr.py
+# starts on :8000 before entering its consume loop, so that is what the probes
+# use. It proves the process is alive and its metrics server is serving; it
+# does NOT prove the worker is successfully consuming from Kafka.
+# ---------------------------------------------------------------------------
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: certifake-worker-ocr
   labels:
     app: worker-ocr
+    component: worker
 spec:
-  replicas: 3
   selector:
     matchLabels:
       app: worker-ocr
@@ -62,30 +183,83 @@ spec:
     metadata:
       labels:
         app: worker-ocr
+        component: worker
     spec:
       containers:
-      - name: worker-ocr
-        image: your-dockerhub-user/certifake-worker-ocr:latest
-        env:
-        - name: DATABASE_URL
-          valueFrom:
-            secretKeyRef:
-              name: certifake-secrets
-              key: database-url
-        - name: KAFKA_BOOTSTRAP_SERVERS
-          value: "kafka-service:9092"
-        resources:
-          requests:
-            cpu: "500m"
-            memory: "512Mi"
-          limits:
-            cpu: "1000m"
-            memory: "1Gi"
+        - name: worker-ocr
+          image: ghcr.io/rishi-1603/certifake-backend:latest
+          imagePullPolicy: Always
+          command: ["python"]
+          args: ["-m", "app.workers.ocr"]
+          ports:
+            - name: metrics
+              containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: certifake-secrets
+                  key: database-url
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka-service:9092"
+            - name: REDIS_URL
+              value: "redis://redis-service:6379/0"
+            - name: MINIO_ENDPOINT
+              value: "http://minio-service:9000"
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: certifake-secrets
+                  key: minio-access-key
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: certifake-secrets
+                  key: minio-secret-key
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            # A worker that stops serving metrics is hung; restart it. Generous
+            # failure threshold because OCR of a large document legitimately
+            # keeps the process busy inside one message for a while.
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
 ---
+# CPU-based autoscaling IS defensible for this specific worker, and it is worth
+# being precise about why: OCR is CPU-bound. pytesseract shells out to the
+# tesseract binary, so each message burns real CPU rather than blocking on I/O,
+# and CPU utilisation tracks load closely. For a purely I/O-bound consumer it
+# would be the wrong signal -- the right one there is consumer lag, which needs
+# something like KEDA. Adding KEDA to scale on lag would be technology for its
+# own sake in a project with no cluster to validate it against, so it is
+# deliberately NOT added; it is recorded as a future improvement instead.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: ocr-worker-hpa
+  labels:
+    app: worker-ocr
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
@@ -94,9 +268,112 @@ spec:
   minReplicas: 2
   maxReplicas: 10
   metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 70
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+# ---------------------------------------------------------------------------
+# Forensics worker -- ENTIRELY MISSING from the previous version of this file,
+# which deployed only the OCR worker while docker-compose.yml runs both. A
+# reviewer comparing the two would find the gap immediately.
+#
+# Same CPU-bound reasoning as OCR: it does per-pixel image analysis with PIL.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: certifake-worker-forensics
+  labels:
+    app: worker-forensics
+    component: worker
+spec:
+  selector:
+    matchLabels:
+      app: worker-forensics
+  template:
+    metadata:
+      labels:
+        app: worker-forensics
+        component: worker
+    spec:
+      containers:
+        - name: worker-forensics
+          image: ghcr.io/rishi-1603/certifake-backend:latest
+          imagePullPolicy: Always
+          command: ["python"]
+          args: ["-m", "app.workers.forensics"]
+          ports:
+            - name: metrics
+              containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: certifake-secrets
+                  key: database-url
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka-service:9092"
+            - name: REDIS_URL
+              value: "redis://redis-service:6379/0"
+            - name: MINIO_ENDPOINT
+              value: "http://minio-service:9000"
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: certifake-secrets
+                  key: minio-access-key
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: certifake-secrets
+                  key: minio-secret-key
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: forensics-worker-hpa
+  labels:
+    app: worker-forensics
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: certifake-worker-forensics
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
