@@ -316,11 +316,18 @@ kubectl apply -f k8s/deployment.yaml
   startup, probe behaviour, HPA scaling and reachability of
   Kafka/Postgres/Redis/MinIO from inside a cluster are all unverified, and
   no cluster was available to verify them.
-- Nothing publishes a container image to a registry **yet** — the Day-5
-  `docker-publish` CI job is the first attempt, and whether the GHCR package
-  it creates is publicly pullable (vs. private, which would need
-  `imagePullSecrets` in the k8s manifests) is recorded in the README once CI
-  has actually run it.
+- **Resolved (Day 5, verified after the fact):** CI *does* now publish a
+  container image. The `docker-publish` job ran on commit `5a31222` and
+  succeeded; `ghcr.io/rishi-1603/certifake-backend` was then confirmed
+  **publicly resolvable anonymously** — both `:latest` and the immutable
+  `:<git-sha>` tag return HTTP 200 on an unauthenticated registry manifest
+  fetch (digest `sha256:1c4807a0…`). So the k8s manifests reference a real,
+  pullable artifact rather than a placeholder, and `imagePullSecrets` are
+  **not** required. This README previously said the answer would be recorded
+  once CI had actually run it; this is that record.
+  - Still unverified: that a pod actually *starts* from that image in a
+    cluster. Publishing proves the image exists and is pullable, not that the
+    app runs inside it.
 
 ### How scoring works (exactly, not aspirationally)
 

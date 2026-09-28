@@ -8,11 +8,18 @@
 #              locally, via kubeconform in -strict mode (catches unknown or
 #              misspelled fields, not just malformed YAML).
 #   VERIFIED   Every image reference resolves in its registry -- see
-#              scripts/check_images.py, also run in CI.
+#              scripts/check_images.py, also run in CI. For the app image that
+#              is not a hypothetical: the CI docker-publish job ran on commit
+#              5a31222 and ghcr.io/rishi-1603/certifake-backend was then
+#              confirmed PUBLICLY resolvable anonymously (both `:latest` and
+#              the immutable `:<git-sha>` tag return HTTP 200 on an
+#              unauthenticated manifest fetch, digest sha256:1c4807a0...), so
+#              imagePullSecrets are not required.
 #   NOT VERIFIED  That a pod actually starts, that the probes pass, that the
 #              HPA scales, or that these services can reach Kafka/Postgres/
-#              Redis/MinIO. None of that can be checked without a cluster, and
-#              none of it was checked.
+#              Redis/MinIO. Publishing proves the image exists and is pullable,
+#              not that the app runs inside it. None of that can be checked
+#              without a cluster, and none of it was checked.
 #
 # Note that schema validity is a weak guarantee, and this file used to be a
 # good example of why: the previous version passed kubeconform -strict while

@@ -90,6 +90,14 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Required by check_config_consistency.py. This step was missing on the
+      # first run of this job, so it failed with ModuleNotFoundError: yaml --
+      # while the identical jobs in DevTrack and RepayMaster (which did have
+      # it) passed. The runner's preinstalled python3 happens to lack PyYAML
+      # once setup-python switches the interpreter.
+      - name: Install PyYAML (for the consistency checker)
+        run: python -m pip install -q pyyaml
+
       # A real compose file needs SECRET_KEY to interpolate; the value is
       # irrelevant here because nothing is started, only parsed.
       - name: Validate docker-compose.yml
@@ -110,13 +118,22 @@ jobs:
 
       - name: Check every referenced image still exists in its registry
         run: |
-          # ghcr.io/rishi-1603/* is exempted because those images are produced
-          # by the docker-publish job in THIS workflow: they cannot exist before
-          # the first successful publish, so failing on them would be circular.
-          # The exemption is explicit on the command line rather than hidden in
-          # the script, so it is visible in the logs and in review.
+          # No exemptions. This step initially ran with
+          # `--allow-missing ghcr.io/rishi-1603/` because the k8s manifests
+          # reference an image this same workflow publishes, which cannot exist
+          # before the first successful publish -- checking it would have been
+          # circular. That bootstrap is now complete: the docker-publish job ran
+          # on 5a31222 and both `:latest` and the immutable `:<git-sha>` tag were
+          # confirmed publicly resolvable (anonymous manifest fetch, HTTP 200,
+          # digest sha256:1c4807a0...). So the exemption was REMOVED and this
+          # now verifies our own published artifact alongside the third-party
+          # ones, which is strictly stronger.
+          #
+          # Caveat, stated rather than discovered later: if the image is ever
+          # RENAMED, this job and docker-publish run in parallel, so the rename
+          # commit would fail here until the new name is published once. Re-add
+          # --allow-missing for that single commit if it happens.
           python3 scripts/check_images.py \
-            --allow-missing ghcr.io/rishi-1603/ \
             docker-compose.yml \
             k8s/deployment.yaml \
             backend/Dockerfile
