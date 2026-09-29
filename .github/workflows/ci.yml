@@ -146,13 +146,12 @@ jobs:
     # could not be built or run in the sandbox this was developed in (no
     # Docker daemon available there), so this job is the first real
     # verification that it builds at all, not a repeat of a local check.
-    # Does not attempt `docker compose up`: this project's compose stack
-    # (Postgres + Redis + Zookeeper + Kafka + MinIO + 3 app services) is
-    # too heavy to reliably boot inside a shared CI runner in the time
-    # budget of this project's scope -- a fresher project's CI proving the
-    # image builds cleanly is honest and valuable; pretending to have
-    # verified a full multi-broker distributed stack boots in CI when it
-    # was never actually exercised here would not be.
+    #
+    # Booting the full stack is compose-smoke-test's job (below). This comment
+    # used to say the stack was "too heavy to reliably boot inside a shared CI
+    # runner" and that attempting it was out of scope. That was a prediction,
+    # not a measurement -- so it is now measured, and the prediction stands or
+    # falls on that job's result rather than on an assumption.
     runs-on: ubuntu-latest
     needs: test
 
@@ -162,6 +161,80 @@ jobs:
 
       - name: Build image
         run: docker build -t certifake-backend:ci backend
+
+  # ===========================================================================
+  # Boots the REAL 10-service stack and drives one genuine request through it.
+  #
+  # WHY THIS JOB EXISTS: every other job in this workflow checks a PART. The
+  # unit tests fake Kafka and S3 at the Python-call boundary; config-validation
+  # parses YAML and resolves image references; docker-build compiles an image.
+  # Until now nothing anywhere had ever run `docker compose up` on this stack,
+  # so the entire distributed path -- does the worker actually consume the
+  # topic, do the MinIO credentials match, does tesseract have its language
+  # data in the image, can api-gateway reach postgres by service name -- was
+  # untested. A green suite can coexist with a stack that never worked.
+  #
+  # `up --wait` blocks until every healthchecked service reports healthy, so
+  # this also empirically validates the healthchecks added earlier (which were
+  # only ever verified by inspecting image layer tarballs for the binaries they
+  # name). zookeeper/kafka/prometheus/grafana have no healthchecks -- see the
+  # note on api-gateway's depends_on in docker-compose.yml for why Kafka is
+  # deliberately not gated -- so --wait does not block on them; the smoke test
+  # retries /analyze through the documented 503-while-Kafka-elects window.
+  #
+  # The smoke test runs INSIDE api-gateway so it needs no runner dependencies:
+  # it uses the app image's own Pillow to render the certificate and stdlib
+  # urllib for HTTP. See scripts/compose_smoke_test.py for what it asserts.
+  # ===========================================================================
+  compose-smoke-test:
+    runs-on: ubuntu-latest
+    needs: docker-build
+    # Pulling confluentinc/cp-kafka + cp-zookeeper + grafana + prometheus and
+    # waiting for Kafka to elect a broker is minutes, not seconds.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Same throwaway value pattern as config-validation: the compose file
+      # requires SECRET_KEY to interpolate (`${SECRET_KEY:?...}`), and the app
+      # deliberately has no safe hardcoded default so that a missing secret is
+      # loud. Nothing here is a real credential.
+      - name: Boot the stack and wait for all healthchecks
+        env:
+          SECRET_KEY: ci-smoke-only-not-a-real-secret
+        run: |
+          docker compose version
+          docker compose up -d --build --wait --wait-timeout 900
+
+      # Recorded whether or not the smoke test passes: a service that is up but
+      # unhealthy (or restarting) is exactly the failure mode the healthchecks
+      # exist to surface, and this is the only place it is visible.
+      - name: Report container states
+        if: always()
+        env:
+          SECRET_KEY: ci-smoke-only-not-a-real-secret
+        run: docker compose ps -a
+
+      - name: Run the end-to-end smoke test inside api-gateway
+        env:
+          SECRET_KEY: ci-smoke-only-not-a-real-secret
+        run: docker compose exec -T api-gateway python - < scripts/compose_smoke_test.py
+
+      # Only useful when something above failed, and the whole point of a first
+      # run of a stack that has never been booted is to get these logs.
+      - name: Dump service logs on failure
+        if: failure()
+        env:
+          SECRET_KEY: ci-smoke-only-not-a-real-secret
+        run: docker compose logs --tail 120
+
+      - name: Tear down (volumes too, so no state leaks between runs)
+        if: always()
+        env:
+          SECRET_KEY: ci-smoke-only-not-a-real-secret
+        run: docker compose down -v --remove-orphans --timeout 30
 
   # Publishes the single backend image that all three workloads run
   # (api-gateway, worker-ocr, worker-forensics are the same image with

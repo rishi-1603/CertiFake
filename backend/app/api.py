@@ -53,7 +53,7 @@ from app.auth import _get_db, login, register, require_user
 from app.config import settings
 from app.kafka_utils import get_kafka_producer, produce_event
 from app.metrics import analyze_request_duration_seconds, analyze_requests_total
-from app.models import Base, CertificateAnalysis, User, engine
+from app.models import CertificateAnalysis, User
 from app.rate_limit import check_rate_limit
 from app.report import create_report
 from app.s3_utils import (
@@ -83,7 +83,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-Base.metadata.create_all(bind=engine)
+# No create_all() call here, and no Base/engine import for one: importing
+# app.models above already ran init_db(), which takes a Postgres advisory lock
+# so api-gateway, worker-ocr and worker-forensics cannot race on CREATE TABLE
+# when all three boot against one fresh database. A second bare create_all()
+# here used to do exactly that -- it duplicated the work and bypassed the lock.
+# See app/models.py:init_db for the full reasoning.
 producer = get_kafka_producer()
 
 @app.get("/health")
