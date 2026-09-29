@@ -77,12 +77,20 @@ services:
   # (librdkafka 2.3.0), which speaks to a 3.9 broker normally; Kafka maintains
   # client/broker protocol compatibility across these versions.
   #
-  # NOT VERIFIED FROM HERE: the exact JDK patch level inside the 7.9.10 image.
-  # It is not exposed in the image config blob and there is no Docker daemon in
-  # this sandbox to run `java -version`. Since one of the affected builds on
-  # record is 17.0.11 and this image is far newer, the bump very likely fixes
-  # the NPE on its own -- but "very likely" is why the JVM flag below is also
-  # set rather than betting a CI cycle on it.
+  # The exact JDK patch level inside the 7.9.10 image is still not known -- it
+  # is not exposed in the image config blob, and there is no Docker daemon in
+  # this sandbox to run `java -version`. One affected build on record is
+  # 17.0.11 and this image is far newer, so the bump very likely fixes the NPE
+  # on its own; "very likely" is why the JVM flag below is also set rather than
+  # betting a CI cycle on it.
+  #
+  # OUTCOME, now measured rather than predicted: the compose-smoke-test job
+  # passed on 62b6c7f (run 36613263530, 2026-09-29). ZooKeeper came up and
+  # stayed up, Kafka resolved it, and /analyze returned 202 on the first
+  # attempt with the whole pipeline completing in 12s. So this combination
+  # works on ubuntu-24.04 runners. It does NOT establish which of the two
+  # changes was load-bearing -- both were applied together, deliberately, to
+  # avoid spending a cycle finding out.
   # ---------------------------------------------------------------------------
   zookeeper:
     image: confluentinc/cp-zookeeper:7.9.10

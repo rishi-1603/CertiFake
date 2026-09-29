@@ -222,8 +222,10 @@ jobs:
           SECRET_KEY: ci-smoke-only-not-a-real-secret
         run: docker compose exec -T api-gateway python - < scripts/compose_smoke_test.py
 
-      # Only useful when something above failed, and the whole point of a first
-      # run of a stack that has never been booted is to get these logs.
+      # Only useful when something above failed. This step earned its place on
+      # the job's very first run, when the stack had never been booted anywhere:
+      # these logs are the only reason the ZooKeeper cgroup-v2 crash was
+      # diagnosed as a JVM bug in an old image rather than guessed at.
       - name: Dump service logs on failure
         if: failure()
         env:

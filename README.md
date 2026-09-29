@@ -5,7 +5,7 @@ or fabrication, using OCR text extraction and pixel-level forensic
 heuristics (not a trained ML classifier — see "How scoring works" below for
 exactly what is and isn't implemented).
 
-## Status: mid-rebuild (Day 1-5 of a 7-day hardening pass)
+## Status: mid-rebuild (Day 1-6 of a 7-day hardening pass)
 
 This repository previously contained **three separate, overlapping
 implementations** of the same idea (a Streamlit app, a synchronous FastAPI
@@ -293,23 +293,37 @@ Those four keys (`database-url`, `secret-key`, `minio-access-key`,
 kubectl apply -f k8s/deployment.yaml
 ```
 
-### Automated tests: 50 pytest tests covering auth, cross-user ownership
+### Automated tests: 56 pytest tests covering auth, cross-user ownership
   isolation, upload validation, the storage-outage failure path,
   rate-limiting (including a real Redis-outage simulation), the `/metrics`
-  endpoint, and the consumer loop's retry / DLQ / commit-ordering /
-  idempotency guarantees (`backend/tests/`).
+  endpoint, the consumer loop's retry / DLQ / commit-ordering /
+  idempotency guarantees, and concurrent-safe schema creation
+  (`backend/tests/`).
+
+  The last six are `test_schema_init.py`, added Day 6. They cover
+  `app/models.py:init_db()`, which now serializes `create_all()` behind a
+  Postgres advisory lock because api-gateway, worker-ocr and
+  worker-forensics all import that module and would otherwise race on
+  `CREATE TABLE` at boot. The SQLite branch is exercised for real; the
+  Postgres branch's *contract* is pinned with a fake engine (lock → create →
+  unlock, same key both ways, unlock still runs when `create_all` raises),
+  because the suite deliberately runs on SQLite and advisory locks have no
+  SQLite equivalent. The file's docstring states what no test covers: that a
+  real Postgres actually blocks the second process.
 
 ### What is NOT implemented yet (tracked for later days of this pass, not claimed as done)
 
-- CI does not run the full `docker-compose` stack (Postgres + Kafka +
-  Zookeeper + MinIO + 3 app services) end-to-end, and Grafana dashboards
-  for the new Prometheus metrics have not been built — the metrics are
-  real and scrapeable, but nothing has been done yet to visualize them.
-- Real end-to-end integration test against actual Kafka/Postgres/MinIO
-  containers (today's test suite mocks those integrations at the
-  Python-call boundary, or in one case points the real client at a
-  guaranteed-unreachable address to test the failure path — it does not
-  spin up the full docker-compose stack).
+- Grafana dashboards for the new Prometheus metrics have not been built —
+  the metrics are real and scrapeable, and Grafana does start as part of the
+  compose stack, but nothing has been done to visualize them.
+- **Resolved (Day 6, verified by a passing CI run):** CI *does* now run the
+  full `docker-compose` stack end-to-end, and there *is* a real integration
+  test against actual Kafka/Postgres/MinIO containers. Both of the bullets
+  that used to sit here said those things were missing; they were accurate
+  until the `compose-smoke-test` job passed on commit `62b6c7f` (run
+  `36613263530`, 2026-09-29). See **"Docker Compose stack — booted and driven end to end"** below for exactly what that run
+  observed — and for the two real bugs it found, in ZooKeeper and in this
+  project's own startup path.
 - Malware scanning of uploaded files (only type/format validation exists).
 - `k8s/deployment.yaml` has **never been applied to a live cluster**. It is
   schema-validated and internally consistent (see Day 5 below), but pod
@@ -328,6 +342,82 @@ kubectl apply -f k8s/deployment.yaml
   - Still unverified: that a pod actually *starts* from that image in a
     cluster. Publishing proves the image exists and is pullable, not that the
     app runs inside it.
+
+### Docker Compose stack — booted and driven end to end
+
+**Verified in CI, not locally.** The `compose-smoke-test` job runs
+`docker compose up -d --build --wait --wait-timeout 900` on the real
+10-service stack and then executes `scripts/compose_smoke_test.py` *inside*
+the api-gateway container, so it uses the application image's own Pillow and
+needs no dependencies on the runner. Passing on commit `62b6c7f` (run
+`36613263530`, 2026-09-29).
+
+What that run observed:
+
+- **All 10 containers up, none restarting or exited.** Six reported Docker's
+  own `healthy` state — `postgres`, `redis`, `minio`, `api-gateway`,
+  `worker-ocr`, `worker-forensics` — which is the first *empirical*
+  confirmation that the healthchecks work. They had previously been verified
+  only by unpacking image layer tarballs to confirm the binaries they name
+  (`pg_isready`, `redis-cli`, `mc`, `python`) actually exist in those exact
+  images. The other four (`zookeeper`, `kafka`, `prometheus`, `grafana`) have
+  no healthchecks by design, so `--wait` does not gate on them.
+- **The Chainguard MinIO replacement works.** `minio` reached `healthy`, so
+  the `mc alias set` probe authenticates against the S3 API successfully as
+  UID 65532 — the open question left by Day 5's image swap.
+- **One real request traversed the whole pipeline.** `/health` 200 →
+  `/auth/register` 201 with a JWT → `/auth/me` 200 → a 37,828-byte PNG
+  rendered with real text → `POST /analyze` **202 on the first attempt** →
+  `status=completed` in **12 seconds** → 170 characters of OCR text with
+  `CERTIFICATE` recovered from the image → `authenticity_score = 50.0` from
+  the forensics worker → **all four** extracted fields (`name`,
+  `certificate_no`, `date`, `institution`) → `GET /heatmap/{id}` 200 with a
+  51,034-byte PNG and `GET /report/{id}` 200 with 2,091 bytes, both stored in
+  MinIO by a worker and served back through the API.
+
+That exercises every hop: HTTP → magic-byte validation → MinIO write →
+Postgres row → Kafka publish → OCR worker → tesseract → Kafka publish →
+forensics worker → Pillow scoring → heatmap back to MinIO → row updated →
+client polls and downloads. The unit tests fake Kafka and S3 at the
+Python-call boundary, so none of this was covered before.
+
+**Two real bugs this found, both fixed:**
+
+1. **ZooKeeper could not start on a cgroup-v2 host.** The first run failed
+   with `container certifake-zookeeper-1 exited (1)` and a
+   `NullPointerException` in `jdk.internal.platform.cgroupv2.CgroupV2Subsystem`
+   — a known JDK bug on cgroup-v2-only hosts whose container cgroup has no
+   delegated controllers, triggered here by the JMX local management agent.
+   Kafka then could not resolve `zookeeper:2181` and every app container
+   logged rdkafka `Connection refused`: the entire event backbone was down
+   because its metadata store died during JVM startup. `cp-zookeeper:7.3.0` is
+   a January 2023 image with a JDK old enough to hit this. Fixed by bumping
+   both Confluent images to **7.9.10** — the last Confluent line that still
+   ships ZooKeeper, since 8.0 removes it and mandates KRaft, so this is the
+   newest image preserving the existing architecture rather than forcing a
+   KRaft migration into the same commit as a boot fix — plus
+   `JAVA_TOOL_OPTIONS=-XX:-UseContainerSupport` on both JVMs and explicitly
+   pinned heap sizes. `docker-compose.yml` documents the reasoning and warns
+   not to copy that flag into `k8s/deployment.yaml`, which does set resource
+   limits.
+2. **Three containers raced on `CREATE TABLE` at boot.** api-gateway,
+   worker-ocr and worker-forensics are one image with three commands and all
+   three import `app/models.py`, which called `Base.metadata.create_all()` at
+   import time. `create_all(checkfirst=True)` reflects and then emits a plain
+   `CREATE TABLE`, not `IF NOT EXISTS`, so on a fresh Postgres two processes
+   can both see "missing" and the loser dies with sqlstate `42P07` during
+   import. `restart: unless-stopped` would usually hide that, turning startup
+   into a scheduling race. `init_db()` now serializes it behind a Postgres
+   session-level advisory lock, and `app/api.py`'s second bare `create_all()`
+   (with the `Base`/`engine` imports that existed only to call it) is gone.
+   This one was found by reading the code while writing the test, not by
+   observing a crash — stated as such rather than dressed up as a caught
+   failure.
+
+**Still not verified:** nothing about Kubernetes (next section), and the
+advisory-lock path has not been observed *blocking a second process* on a real
+Postgres — the CI run proves the stack boots and works with the lock in place,
+not that a concurrent collision was actually prevented.
 
 ### How scoring works (exactly, not aspirationally)
 
