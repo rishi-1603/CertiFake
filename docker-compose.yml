@@ -38,16 +38,87 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # WHY 7.9.10 AND NOT THE 7.3.0 THIS FILE ORIGINALLY PINNED
+  #
+  # Booting this stack for the first time (compose-smoke-test CI job) failed
+  # immediately, and the failure was in ZooKeeper, not in this project's code:
+  #
+  #   container certifake-zookeeper-1 exited (1)
+  #   java.lang.NullPointerException
+  #     at jdk.internal.platform.cgroupv2.CgroupV2Subsystem.getInstance(...)
+  #     at jdk.internal.platform.Container.metrics(...)
+  #     at jdk.management.agent/jdk.internal.agent.Agent.startLocalManagementAgent
+  #
+  # followed by Kafka logging "Unable to resolve address: zookeeper:2181" and
+  # every app container logging rdkafka "Connection refused" -- i.e. the whole
+  # event backbone was down because its metadata store died at JVM startup.
+  #
+  # That NPE is a known JDK bug, not a misconfiguration: on a cgroup-v2-only
+  # host whose container cgroup has no controllers delegated, older JDKs
+  # dereference a null `anyController` while probing container metrics. It is
+  # triggered here by the JMX local management agent starting up, and the same
+  # bug broke Elasticsearch 7.17.4 on GitHub-hosted runners in Feb 2026
+  # (actions/runner-images#13684) -- ubuntu-24.04 runners are cgroup v2 only.
+  # cp-zookeeper:7.3.0 is a January 2023 image carrying a JDK old enough to hit
+  # it.
+  #
+  # 7.9.10 is the version chosen deliberately, not merely "the latest":
+  # Confluent Platform 7.9.x is the LAST release line that still ships
+  # ZooKeeper -- 8.0 removes it entirely and mandates KRaft. So 7.9.10 is the
+  # newest image that preserves this stack's existing ZooKeeper architecture
+  # (an incremental change) rather than forcing a KRaft migration in the same
+  # commit as a boot fix. Its images were rebuilt 2026-09-14 (verified from the
+  # registry config blob), versus 7.3.0 from 2023, which also means ~2.5 years
+  # of CVE fixes -- the same reasoning that moved minio off its deleted,
+  # CVE-shipping image elsewhere in this file.
+  #
+  # The broker goes 3.3 -> 3.9. The app's client is confluent-kafka 2.3.0
+  # (librdkafka 2.3.0), which speaks to a 3.9 broker normally; Kafka maintains
+  # client/broker protocol compatibility across these versions.
+  #
+  # NOT VERIFIED FROM HERE: the exact JDK patch level inside the 7.9.10 image.
+  # It is not exposed in the image config blob and there is no Docker daemon in
+  # this sandbox to run `java -version`. Since one of the affected builds on
+  # record is 17.0.11 and this image is far newer, the bump very likely fixes
+  # the NPE on its own -- but "very likely" is why the JVM flag below is also
+  # set rather than betting a CI cycle on it.
+  # ---------------------------------------------------------------------------
   zookeeper:
-    image: confluentinc/cp-zookeeper:7.3.0
+    image: confluentinc/cp-zookeeper:7.9.10
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      # See the block above for the cgroup-v2 NPE. -XX:-UseContainerSupport
+      # stops the JVM probing cgroups at all, which removes the code path that
+      # dereferences the null controller -- a deterministic fix that does not
+      # depend on which JDK patch the image happens to ship.
+      #
+      # TRADE-OFF, stated because it matters: with container support off the JVM
+      # can no longer derive a default heap from the container's memory limit.
+      # That is a no-op HERE because (a) this file sets no memory limits, so the
+      # container already sees the whole host, and (b) KAFKA_HEAP_OPTS is pinned
+      # explicitly right below, so nothing is left to be derived.
+      #
+      # DO NOT copy this flag into k8s/deployment.yaml. That manifest DOES set
+      # resource limits, and there the flag would let the JVM size its heap from
+      # the node's memory instead of the pod's -- an OOMKill waiting to happen.
+      # This is a targeted fix for a JVM bug on cgroup-v2 CI hosts, not a
+      # general recommendation.
+      JAVA_TOOL_OPTIONS: -XX:-UseContainerSupport
+      # Pinned rather than inherited: makes heap sizing independent of the flag
+      # above, and bounds two JVMs on a shared CI runner. KAFKA_HEAP_OPTS is the
+      # Confluent images' own convention for every service in their family
+      # (including ZooKeeper), and these values match their documented defaults
+      # -- so this is explicitness, not a change in behaviour. Bounded downside
+      # if that convention ever changes: the variable is ignored and the image's
+      # own default heap applies, which cannot be worse than today's state.
+      KAFKA_HEAP_OPTS: -Xmx512M -Xms512M
     ports:
       - "2181:2181"
 
   kafka:
-    image: confluentinc/cp-kafka:7.3.0
+    image: confluentinc/cp-kafka:7.9.10
     depends_on:
       - zookeeper
     ports:
@@ -59,6 +130,17 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      # Set on the broker too, not only on ZooKeeper. In the failing run Kafka's
+      # own JVM survived -- its logs show it running and merely unable to
+      # resolve zookeeper:2181 -- so only ZooKeeper actually died. But the same
+      # NPE has a second trigger that Kafka does use: log4j2 re-registering its
+      # JMX MBeans calls ManagementFactory.getPlatformMBeanServer(), which is
+      # exactly the path that killed Elasticsearch 7.17.4 in the runner-images
+      # issue above. Leaving Kafka unprotected would mean the broker could die
+      # later in startup, after ZooKeeper was fixed, and cost another full cycle
+      # to discover.
+      JAVA_TOOL_OPTIONS: -XX:-UseContainerSupport
+      KAFKA_HEAP_OPTS: -Xmx1G -Xms1G
 
   # ---------------------------------------------------------------------------
   # WHY THIS IS NOT `minio/minio` ANY MORE
