@@ -409,6 +409,35 @@ this repo is fixed here; the fixes are listed with what made each one matter.
    was run against. `ruff` is pinned in CI for the same reason: an unpinned
    linter lets an upstream rule change break a build with no commit here.
 
+   The first attempt at this pinned correctly for the wrong machine, and the
+   red build is worth recording rather than quietly fixing: `numpy` was set to
+   2.5.3, which publishes wheels only for Python ≥3.12, chosen from a local
+   3.13 venv where it installed without complaint. This repo builds and tests on
+   **3.11** (`ci.yml` and `backend/Dockerfile`), so the pin resolved nowhere in
+   CI and the `test` job failed at install time — `ERROR: No matching
+   distribution found` — on a commit whose every other change was sound. It is
+   now `numpy==2.4.6`: the newest release with a cp311 wheel, advisory-clean
+   under `pip-audit`, and what this suite is actually run against. The
+   constraint and the exact cross-interpreter check that would have caught it
+   (`pip install --dry-run --python-version 3.11 --platform manylinux2014_x86_64
+   --only-binary=:all: -r requirements.txt`, which reproduces the CI failure
+   locally in four seconds) are recorded in `requirements.txt` itself, because
+   that is where the next person edits a pin.
+8. **A parity guard so the interpreter cannot drift silently**
+   (`scripts/check_config_consistency.py`, `check_python_parity`). The numpy
+   mistake above was not really about numpy: it was about the repo having no way
+   to say "the version you are pinning against is not the version that runs
+   here." The checker now compares `python-version` in `ci.yml` against every
+   `FROM python:X.Y` in the repo's Dockerfiles and fails the
+   `config-validation` job if they disagree — the quieter mirror-image case,
+   where the suite passes on 3.12 and the image runs 3.11, is the one that would
+   otherwise reach production. Mutation-tested locally: it exits 1 with the
+   mismatch spelled out when the Dockerfile says 3.13 and CI says 3.11, and 0
+   when they agree. This script is deliberately identical across all three
+   repositories, so the same guard runs in DevTrack and Repay-Master (both on
+   3.12).
+
+
 CORS is *not* a finding in this repo, and it is worth saying why rather than
 leaving it implicit: `allowed_origins` defaults to an explicit list of
 localhost origins, never `*`, so the wildcard-with-credentials pairing that the

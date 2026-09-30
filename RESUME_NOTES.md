@@ -50,6 +50,7 @@ boots and drives end to end.
 | JWT library | PyJWT 2.15.1 | `app/auth.py`; python-jose removed — unmaintained, and PYSEC-2025-185 has no published fix |
 | Required config | `SECRET_KEY`, `DATABASE_URL` | no insecure defaults left; subprocess tests assert the process refuses to start without them |
 | Signing-key floor | 32 bytes, unconditional | `app/config.py` validator; stricter than the siblings on purpose, because nothing here is deployed |
+| Interpreter parity | CI == image == Python 3.11 | `check_config_consistency.py` fails `config-validation` if `ci.yml` and a Dockerfile disagree; mutation-tested (exit 1 on mismatch) |
 | Compose services | 10 | postgres, redis, zookeeper, kafka, minio, prometheus, grafana, api-gateway, worker-ocr, worker-forensics |
 | Healthy in CI | 6 of 10 | the other 4 have no healthcheck by design |
 | End-to-end latency | 12 s upload→completed | Day-6 smoke run, CI log |

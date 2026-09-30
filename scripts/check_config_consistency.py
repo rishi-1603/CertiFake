@@ -327,6 +327,53 @@ def check_prometheus(paths: list[Path], services: dict[str, dict]) -> None:
                                                f"server at all)")
 
 
+def check_python_parity() -> None:
+    """CI's interpreter must match the interpreter the built images run.
+
+    DRIFT THIS GUARDS AGAINST, from a real red build: numpy was pinned to a
+    version that publishes wheels only for Python >=3.12 -- chosen from a local
+    3.13 venv, where it installed happily -- while this repo's ci.yml and
+    Dockerfile both build on 3.11. Nothing in the repo disagreed with itself, so
+    the failure surfaced as `ERROR: No matching distribution found` in a CI test
+    job that had passed on every previous commit. The pin was not wrong for the
+    machine it was written on; it was wrong for the machine that runs it.
+
+    The mirror-image case is worse and quieter: ci.yml on one minor version and
+    the Dockerfile on another, so the suite validates code that production does
+    not run. Both are one comparison away from being caught here.
+    """
+    ci = ROOT / ".github" / "workflows" / "ci.yml"
+    if not ci.exists():
+        note("python", "no ci.yml -- interpreter parity check skipped")
+        return
+
+    ci_versions = set(re.findall(r"python-version:\s*[\"']?(\d+\.\d+)", ci.read_text(encoding="utf-8")))
+    image_versions: dict[str, set[str]] = {}
+    for dockerfile in find_files(names=("Dockerfile",)):
+        found = set(re.findall(r"^\s*FROM\s+python:(\d+\.\d+)",
+                               dockerfile.read_text(encoding="utf-8"), re.MULTILINE))
+        if found:
+            image_versions[str(dockerfile.relative_to(ROOT))] = found
+
+    if not ci_versions:
+        note("python", "ci.yml declares no python-version -- parity check skipped")
+    if not image_versions:
+        note("python", "no python-based Dockerfile -- parity check skipped")
+    if not (ci_versions and image_versions):
+        return
+
+    every_image = set().union(*image_versions.values())
+    if ci_versions != every_image:
+        images = ", ".join(f"{k}={sorted(v)}" for k, v in sorted(image_versions.items()))
+        fail("python", f"interpreter mismatch: CI runs Python {sorted(ci_versions)}, images run "
+                       f"{sorted(every_image)} ({images}). Dependencies resolve differently across "
+                       "minor versions, so every pin must be chosen against the interpreter CI and "
+                       "the images actually use -- a wheel that exists for one may not exist for the "
+                       "other, and the suite would then be validating code production does not run.")
+    else:
+        note("python", f"CI and every image run Python {sorted(ci_versions)} -- pins are chosen against it")
+
+
 def main() -> int:
     compose_paths = find_files(("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"))
     k8s_paths = find_files(subdir="k8s", suffixes=(".yaml", ".yml"))
@@ -362,6 +409,8 @@ def main() -> int:
         check_prometheus(prom_paths, all_services)
     else:
         note("files", "no prometheus config -- scrape-target checks skipped")
+
+    check_python_parity()
 
     checked = [f"{len(compose_paths)} compose", f"{len(k8s_paths)} k8s", f"{len(prom_paths)} prometheus"]
     print(f"  scanned: {', '.join(checked)} file group(s)")

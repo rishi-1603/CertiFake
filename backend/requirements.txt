@@ -42,7 +42,17 @@ bcrypt==4.2.1
 # and ocr.py:37. The forensics tests assert pixel-level behaviour, so they are
 # the check that this bump did not change the scoring.
 pillow==12.3.0
-numpy==2.5.3
+# Pinned to the newest numpy that publishes a cp311 wheel, because THIS repo's
+# interpreter is Python 3.11 in both places it matters: .github/workflows/ci.yml
+# and backend/Dockerfile (python:3.11-slim-trixie). numpy 2.5.x requires >=3.12,
+# so pinning it here fails to resolve in CI even though it installs fine in a
+# newer local venv -- that mismatch cost a red build once already (commit
+# 906de33). Rule for this file: choose pins against the CI interpreter, not the
+# local one, and check with:
+#   pip install --dry-run --python-version 3.11 --platform manylinux2014_x86_64 \
+#     --only-binary=:all: -r requirements.txt
+# 2.4.6 is advisory-clean (pip-audit) and is what the suite is run against.
+numpy==2.4.6
 opencv-python-headless==5.0.0.93
 pytesseract==0.3.13
 python-magic==0.4.27
