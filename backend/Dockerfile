@@ -27,6 +27,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+# The base image ships whatever pip and setuptools Debian packaged, and NEITHER
+# appears in requirements.txt -- so no pin in that file can reach them, and a
+# dependency scan run against the CI runner's Python cannot see them either.
+# This is measured, not guessed: scanning this image from the inside in CI (the
+# docker-build job) found pip 24.0 carrying 7 advisories (PYSEC-2026-1795,
+# -1796, -196, -2875, -2876, -3721) and setuptools 79.0.1 carrying
+# PYSEC-2026-3447. Nothing in requirements.txt was vulnerable; the artifact was.
+#
+# Upgrading BEFORE the install below is not cosmetics. Several of those
+# advisories concern how pip extracts wheels and tarballs and how it resolves
+# console_script paths -- i.e. they apply to the very next command, which pulls
+# dependencies from the network at build time.
+#
+# Python 3.11's ensurepip bundles setuptools; 3.12's does not, which is why the
+# two sibling Dockerfiles (both 3.12-based) upgrade pip only.
+RUN pip install --no-cache-dir --upgrade "pip>=26.2.0" "setuptools>=83.0.0"
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
