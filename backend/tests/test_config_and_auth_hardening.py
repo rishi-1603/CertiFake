@@ -28,6 +28,8 @@ from pathlib import Path
 import jwt
 import pytest
 
+from app.config import MIN_SECRET_KEY_BYTES
+
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
@@ -141,6 +143,54 @@ class TestJwtLibraryMigration:
 
         response = client.get("/auth/me", headers={"Authorization": f"Bearer {expired}"})
         assert response.status_code == 401, response.text
+
+
+class TestSigningKeyStrength:
+    """S15: a *missing* secret was already fatal; a *weak* one now is too.
+
+    HS256 uses the secret directly as an HMAC key, and RFC 7518 3.2 requires at
+    least the hash output length. Below that, a signature can be brute-forced
+    offline from a single captured token -- and unlike a missing secret, a short
+    one does not announce itself: everything appears to work.
+
+    Note the deliberate asymmetry with the sibling projects, which enforce this
+    only when APP_ENV=production: CertiFake is not deployed anywhere, so the
+    unconditional rule costs nothing here and is the correct one the day it is.
+    """
+
+    _DB = {"DATABASE_URL": "sqlite:///./not-used-by-this-import.db"}
+
+    def test_short_secret_key_refuses_to_start(self):
+        result = _import_in_subprocess("app.config", extra_env={**self._DB, "SECRET_KEY": "short"})
+        assert result.returncode != 0, "a short signing key must not start the app"
+        assert "secret_key" in result.stderr
+        assert str(MIN_SECRET_KEY_BYTES) in result.stderr
+        assert "secrets.token_hex" in result.stderr
+
+    @pytest.mark.parametrize("length", [31, 1, 0])
+    def test_everything_below_the_minimum_is_refused(self, length):
+        result = _import_in_subprocess(
+            "app.config", extra_env={**self._DB, "SECRET_KEY": "a" * length}
+        )
+        assert result.returncode != 0
+
+    def test_key_at_the_minimum_is_accepted(self):
+        result = _import_in_subprocess(
+            "app.config", extra_env={**self._DB, "SECRET_KEY": "a" * MIN_SECRET_KEY_BYTES}
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_a_generated_key_is_accepted(self):
+        """The command the error message tells you to run must actually work."""
+        import secrets as _secrets
+
+        result = _import_in_subprocess(
+            "app.config", extra_env={**self._DB, "SECRET_KEY": _secrets.token_hex(32)}
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_threshold_is_the_rfc_minimum_not_an_arbitrary_number(self):
+        assert MIN_SECRET_KEY_BYTES == 32
 
 
 def _b64url(raw: bytes) -> str:

@@ -6,7 +6,7 @@ on Day 7 — before that no percentage existed and none was quoted, which was
 the honest position at the time. Coverage is measured on production code only
 (`.coveragerc` omits the test directory); see the table and the note below for
 what the 78% does and does not mean. Re-measured again after the Day-7
-security remediation: 82 cases, 78% of 759 production statements, and a
+security remediation: 89 cases, 78% of 768 production statements, and a
 dependency audit that is clean **and** blocking.*
 
 ## Resume bullet points (pick 2-3 based on space)
@@ -44,11 +44,12 @@ boots and drives end to end.
 
 | Claim | Value | Source |
 |---|---|---|
-| pytest cases | 82 | CI `test` job; `def test_` count matches (76 before the Day-7 hardening tests) |
-| Coverage (production code) | 78% | CI `--cov=app` with `.coveragerc` omitting tests; 759 stmts, 166 missed |
+| pytest cases | 89 | CI `test` job; `def test_` count matches (76 before the Day-7 hardening tests) |
+| Coverage (production code) | 78% | CI `--cov=app` with `.coveragerc` omitting tests; 768 stmts, 167 missed |
 | Dependency audit | clean, and blocking | `pip-audit` on the pinned set: `No known vulnerabilities found`; was 77 across 10 packages, and the CI step had both `\|\| true` and `continue-on-error` |
 | JWT library | PyJWT 2.15.1 | `app/auth.py`; python-jose removed — unmaintained, and PYSEC-2025-185 has no published fix |
 | Required config | `SECRET_KEY`, `DATABASE_URL` | no insecure defaults left; subprocess tests assert the process refuses to start without them |
+| Signing-key floor | 32 bytes, unconditional | `app/config.py` validator; stricter than the siblings on purpose, because nothing here is deployed |
 | Compose services | 10 | postgres, redis, zookeeper, kafka, minio, prometheus, grafana, api-gateway, worker-ocr, worker-forensics |
 | Healthy in CI | 6 of 10 | the other 4 have no healthcheck by design |
 | End-to-end latency | 12 s upload→completed | Day-6 smoke run, CI log |
@@ -116,7 +117,10 @@ boots and drives end to end.
   without erroring. (6) Five dependencies were installed that nothing imported,
   including `alembic` with no migrations directory — dead weight that implied a
   migration story the repo does not have. (7) Three version specifiers were
-  floating, so two builds of one commit could install different code. All seven
+  floating, so two builds of one commit could install different code. (8)
+  `SECRET_KEY` had no minimum length, so HS256 could have been running on a key
+  short enough to brute-force offline from a single captured token -- the failure
+  mode that survives a checklist, because everything appears to work. All eight
   are fixed; the scan is clean with zero waivers, and only then did I make it
   block.
 - Q: Which of those advisories were you actually vulnerable to?

@@ -1,4 +1,11 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# HS256 signs with the secret as a raw HMAC key. RFC 7518 section 3.2 requires
+# the key to be at least as long as the hash output -- 32 bytes for SHA-256 --
+# and PyJWT warns below that. A short key is not a style problem: it makes the
+# signature brute-forceable offline from any single captured token.
+MIN_SECRET_KEY_BYTES = 32
 
 
 class Settings(BaseSettings):
@@ -23,6 +30,36 @@ class Settings(BaseSettings):
     secret_key: str
     access_token_expire_minutes: int = 60
     jwt_algorithm: str = "HS256"
+
+    @field_validator("secret_key")
+    @classmethod
+    def _secret_key_must_be_long_enough(cls, value: str) -> str:
+        """Refuse to start with a signing key short enough to brute-force (S15).
+
+        Requiring the field (above) stops a *missing* secret; this stops a *weak*
+        one, which is the failure mode that survives a checklist because
+        everything appears to work.
+
+        Unlike the sibling DevTrack and Repay-Master, this check is
+        UNCONDITIONAL rather than production-only. That asymmetry is deliberate:
+        both siblings are (or are intended to be) deployed, and DevTrack is live
+        on Render right now, so a rule that fails unconditionally there could
+        take a running service down over a development key. CertiFake is not
+        deployed anywhere -- no cluster has ever run these manifests -- so the
+        stricter rule costs nothing today and is the right one the day it is
+        deployed. Every path that loads this module already supplies a long
+        enough key: CI uses a 37-character throwaway, conftest a 40-character
+        one, and .env.example documents generating a 64-character hex string.
+        """
+        length = len(value.encode("utf-8"))
+        if length < MIN_SECRET_KEY_BYTES:
+            raise ValueError(
+                f"secret_key is {length} bytes; at least {MIN_SECRET_KEY_BYTES} are required, "
+                "because HS256 uses it directly as an HMAC key (RFC 7518 3.2) and a shorter key "
+                "can be brute-forced offline from any single captured token. Generate one with: "
+                'python -c "import secrets; print(secrets.token_hex(32))"'
+            )
+        return value
 
     upload_dir: str = "data/uploads"
     reports_dir: str = "data/reports"

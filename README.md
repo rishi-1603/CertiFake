@@ -296,7 +296,7 @@ Those four keys (`database-url`, `secret-key`, `minio-access-key`,
 kubectl apply -f k8s/deployment.yaml
 ```
 
-### Automated tests: 82 pytest tests covering auth, cross-user ownership
+### Automated tests: 89 pytest tests covering auth, cross-user ownership
   isolation, upload validation, the storage-outage failure path,
   rate-limiting (including a real Redis-outage simulation), the `/metrics`
   endpoint, the consumer loop's retry / DLQ / commit-ordering /
@@ -316,7 +316,7 @@ kubectl apply -f k8s/deployment.yaml
   unreachable and longer OCR text is silently truncated. Recorded under
   Future Improvements; the test pins the truncation as it exists.
 
-  The six newest are `test_config_and_auth_hardening.py`. They pin the three
+  The thirteen newest are `test_config_and_auth_hardening.py`. They pin the three
   hardening changes below, including two that can only be tested in a
   subprocess: because both values are read at import time and `conftest.py`
   sets them for the rest of the suite, "the process refuses to start without
@@ -366,13 +366,26 @@ this repo is fixed here; the fixes are listed with what made each one matter.
    `Image.open()` runs on attacker-supplied files (`forensics.py:37,43`,
    `ocr.py:37`) and untrusted uploads are parsed at `api.py:46,177,282`. The
    forensics tests assert pixel-level scoring behaviour, so they are the
-   evidence the Pillow bump changed nothing about the product; all 82 pass.
-4. **`SECRET_KEY` is now required.** It used to default to
-   `change_me_to_a_long_random_secret` — a string committed to a public
-   repository, so a deployment that forgot the variable would still start and
-   still issue tokens that *anyone* could forge. The sibling DevTrack and
-   Repay-Master projects made this field required on Day 3; this repo was the
-   one still carrying the fallback. Missing values now fail at import.
+   evidence the Pillow bump changed nothing about the product; all 89 pass.
+4. **`SECRET_KEY` is now required, and must be at least 32 bytes.** It used to
+   default to `change_me_to_a_long_random_secret` — a string committed to a
+   public repository, so a deployment that forgot the variable would still start
+   and still issue tokens that *anyone* could forge. The sibling DevTrack and
+   Repay-Master projects made this field required on Day 3; this repo was the one
+   still carrying the fallback. Missing values now fail at import.
+
+   Requiring the field stops a *missing* secret; the length floor (finding S15)
+   stops a *weak* one, which is the failure that survives a checklist because
+   everything appears to work. HS256 uses the secret directly as an HMAC key and
+   RFC 7518 3.2 requires at least the hash output length — below that, a
+   signature can be brute-forced offline from a single captured token. Unlike the
+   two siblings, this check is **unconditional** rather than production-only, and
+   the asymmetry is deliberate: both siblings are deployed or intended to be
+   (DevTrack is live on Render), where a rule that fails unconditionally could
+   take a running service down over a development key. CertiFake is not deployed
+   anywhere — no cluster has ever run these manifests — so the stricter rule
+   costs nothing today and is the right one the day it is. The CI compose-smoke
+   secret was 31 characters and is now 37.
 5. **`DATABASE_URL` is now required.** It used to fall back to
    `sqlite:///./certifake.db`, so a container started without it ran silently
    on a file-backed SQLite — no error, no persistence across restarts, and a
@@ -647,7 +660,7 @@ pip install -r requirements.txt
 pytest -v
 ```
 
-82/82 tests currently pass. They use a throwaway SQLite database and mock
+89/89 tests currently pass. They use a throwaway SQLite database and mock
 Kafka/S3 calls at the Python function boundary for most tests; one test
 suite (`test_failure_modes.py`) points the *real* Kafka/S3 client code at
 an intentionally unreachable address to verify the 503 failure-handling
