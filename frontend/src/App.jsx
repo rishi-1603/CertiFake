@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useCallback, useState, useRef, useEffect } from 'react'
 import './index.css'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
@@ -96,7 +96,15 @@ function App() {
     else localStorage.removeItem(EMAIL_KEY)
   }, [token, email])
 
-  const authHeaders = () => ({ Authorization: `Bearer ${token}` })
+  // Memoized on `token` because the heatmap/report useEffect below lists this
+  // in its dependency array: an inline closure would get a new identity every
+  // render, which exhaustive-deps would then (correctly) flag as an effect
+  // that re-runs forever. Its only input is `token`, so its identity changes
+  // exactly when the effect should re-run anyway.
+  const authHeaders = useCallback(
+    () => ({ Authorization: `Bearer ${token}` }),
+    [token]
+  )
 
   const handleLogout = () => {
     setToken('')
@@ -198,7 +206,7 @@ function App() {
       setHeatmapUrl(null)
     }
     return () => { if (objectUrl) URL.revokeObjectURL(objectUrl) }
-  }, [result, token])
+  }, [result, token, authHeaders])
 
   const downloadReport = async () => {
     if (!result) return

@@ -311,7 +311,7 @@ kubectl apply -f k8s/deployment.yaml
   SQLite equivalent. The file's docstring states what no test covers: that a
   real Postgres actually blocks the second process.
 
-### What is NOT implemented yet (tracked for later days of this pass, not claimed as done)
+### Future Improvements (deliberately not built yet, with the reason each is deferred)
 
 - Grafana dashboards for the new Prometheus metrics have not been built —
   the metrics are real and scrapeable, and Grafana does start as part of the
@@ -524,25 +524,32 @@ pip install -r requirements.txt
 pytest -v
 ```
 
-50/50 tests currently pass. They use a throwaway SQLite database and mock
+56/56 tests currently pass. They use a throwaway SQLite database and mock
 Kafka/S3 calls at the Python function boundary for most tests; one test
 suite (`test_failure_modes.py`) points the *real* Kafka/S3 client code at
 an intentionally unreachable address to verify the 503 failure-handling
 behavior actually works, not just that it's mocked to look like it works.
+Separately from the unit suite, `scripts/compose_smoke_test.py` drives one
+real request through the actual containers in CI — see the Docker Compose
+section above for what that run observed.
 
 ## Frontend
 
 `frontend/` is a small React (Vite) app with a login/signup form and a
 drag-and-drop upload UI that polls `/status/{id}` and renders the result,
-heatmap, and a PDF report download.
+heatmap, and a PDF report download. Every one of those claims is checked
+against `src/App.jsx` in `frontend/README.md`, which also states what the app
+deliberately does *not* have.
 
 ```bash
 cd frontend
-npm install
+npm ci          # exact install from the lockfile, not npm install
 npm run dev
 ```
 
-Set `VITE_API_URL` if the backend isn't at `http://127.0.0.1:8000`.
+Set `VITE_API_URL` if the backend isn't at `http://127.0.0.1:8000`. The
+`frontend-build` CI job compiles and lints this directory on every push; it
+was added on Day 7 because until then nothing had ever built it.
 
 ## Disclaimer
 
