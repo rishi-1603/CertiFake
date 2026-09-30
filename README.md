@@ -293,12 +293,24 @@ Those four keys (`database-url`, `secret-key`, `minio-access-key`,
 kubectl apply -f k8s/deployment.yaml
 ```
 
-### Automated tests: 56 pytest tests covering auth, cross-user ownership
+### Automated tests: 76 pytest tests covering auth, cross-user ownership
   isolation, upload validation, the storage-outage failure path,
   rate-limiting (including a real Redis-outage simulation), the `/metrics`
   endpoint, the consumer loop's retry / DLQ / commit-ordering /
-  idempotency guarantees, and concurrent-safe schema creation
-  (`backend/tests/`).
+  idempotency guarantees, concurrent-safe schema creation, and — added on
+  Day 7 — direct unit tests of the forensic scoring core and of PDF report
+  generation (`backend/tests/`).
+
+  Coverage is measured in CI (`--cov=app`, production code only via
+  `.coveragerc`): **78%** as of Day 7. The honest shape of that number:
+  `app/forensics.py` went from 13% to 88% and `app/report.py` from 12% to 96%
+  once the Day-7 tests landed, while `app/ocr.py` remains at 33% because it
+  shells out to tesseract — its behaviour is verified end to end by the
+  compose smoke test in CI, which does not measure coverage. Writing those
+  tests also surfaced a real limitation: `create_report()` slices the OCR
+  preview to 32 wrapped lines, so the `showPage()` branch below it is
+  unreachable and longer OCR text is silently truncated. Recorded under
+  Future Improvements; the test pins the truncation as it exists.
 
   The last six are `test_schema_init.py`, added Day 6. They cover
   `app/models.py:init_db()`, which now serializes `create_all()` behind a
@@ -316,6 +328,20 @@ kubectl apply -f k8s/deployment.yaml
 - Grafana dashboards for the new Prometheus metrics have not been built —
   the metrics are real and scrapeable, and Grafana does start as part of the
   compose stack, but nothing has been done to visualize them.
+- **`create_report()` silently truncates the OCR preview to 32 wrapped lines.**
+  Found on Day 7 by a test that expected the opposite: the drawing loop
+  contains a `y < 60 → showPage()` pagination branch, but because the preview
+  is sliced `[:32]` first, 32 lines can never drive `y` below 60 — the branch
+  is unreachable through the only input that feeds it, and longer OCR text is
+  dropped from the PDF without any indication. Deliberately NOT fixed here:
+  whether a client report should paginate or truncate is a product decision,
+  and "fixing" it silently would change an artifact nobody has reviewed. The
+  test pins current behaviour; this bullet records the decision still owed.
+- **`app/ocr.py` has no direct unit tests (33% coverage).** It shells out to
+  tesseract, so unit-testing it means either installing tesseract in the test
+  environment or faking the binary; the compose smoke test already verifies it
+  end to end against the real thing. Adding fast, faked unit tests for the
+  field-extraction regexes specifically is worthwhile and unbuilt.
 - **Resolved (Day 6, verified by a passing CI run):** CI *does* now run the
   full `docker-compose` stack end-to-end, and there *is* a real integration
   test against actual Kafka/Postgres/MinIO containers. Both of the bullets
@@ -524,7 +550,7 @@ pip install -r requirements.txt
 pytest -v
 ```
 
-56/56 tests currently pass. They use a throwaway SQLite database and mock
+76/76 tests currently pass. They use a throwaway SQLite database and mock
 Kafka/S3 calls at the Python function boundary for most tests; one test
 suite (`test_failure_modes.py`) points the *real* Kafka/S3 client code at
 an intentionally unreachable address to verify the 503 failure-handling

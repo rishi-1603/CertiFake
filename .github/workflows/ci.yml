@@ -57,7 +57,10 @@ jobs:
       - name: Run tests (isolated SQLite + fakeredis + fake Kafka/S3, no external services)
         env:
           SECRET_KEY: ci-only-secret-not-used-anywhere-real
-        run: pytest tests/ -v
+        # --cov added Day 7: coverage for this repo was previously unmeasured,
+        # so no percentage was quotable (and none was quoted). term-missing
+        # keeps the gaps visible in the log instead of hiding behind a total.
+        run: pytest tests/ -v --cov=app --cov-report=term-missing
 
   # ===========================================================================
   # Deployment-config validation.

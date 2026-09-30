@@ -31,5 +31,9 @@ alembic==1.13.1
 
 # Test tooling
 pytest==8.3.4
+# Added Day 7 so coverage is MEASURED in CI rather than absent: this repo's
+# test job previously ran bare `pytest`, which is why no coverage percentage
+# existed anywhere and none was ever quoted. Pin matches DevTrack's.
+pytest-cov==5.0.0
 httpx==0.28.1
 fakeredis==2.26.1

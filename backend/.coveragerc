@@ -1,0 +1,12 @@
+# Coverage configuration, added Day 7.
+#
+# WHY THE OMIT EXISTS: `pytest --cov=app` measures everything under the app
+# package, and in this layout the test modules live INSIDE it (app/tests/).
+# Without the omit below, a suite "covers" its own test files, which inflates
+# the total and makes the percentage mean something it does not: DevTrack's
+# long-quoted 94% was measured this way. The number this repo reports is
+# coverage of PRODUCTION code only.
+[run]
+omit =
+    */tests/*
+    */test_*.py

@@ -1,11 +1,11 @@
 # CertiFake — Resume & LinkedIn Bullet Points
 
-*Added Day 7 in the same format as the siblings' notes. Test count is measured
-(56 `def test_` functions; CI `test` job reports `56 passed`). Note what is
-absent: this repo's CI does **not** run coverage (`pytest tests/ -v`, no
-`--cov`), so no percentage is quoted here and none should be quoted in an
-interview. Quoting one would be fabrication, and the sibling DevTrack's notes
-show what a measured number looks like when the tooling exists.*
+*Added Day 7 in the same format as the siblings' notes; every figure measured.
+Test count and coverage come from the CI `test` job, which gained `--cov=app`
+on Day 7 — before that no percentage existed and none was quoted, which was
+the honest position at the time. Coverage is measured on production code only
+(`.coveragerc` omits the test directory); see the table and the note below for
+what the 78% does and does not mean.*
 
 ## Resume bullet points (pick 2-3 based on space)
 
@@ -42,8 +42,8 @@ boots and drives end to end.
 
 | Claim | Value | Source |
 |---|---|---|
-| pytest cases | 56 | CI `test` job; `def test_` count matches |
-| Coverage | **not measured** | CI runs `pytest tests/ -v` without `--cov` |
+| pytest cases | 76 | CI `test` job; `def test_` count matches |
+| Coverage (production code) | 78% | CI `--cov=app` with `.coveragerc` omitting tests, added Day 7 |
 | Compose services | 10 | postgres, redis, zookeeper, kafka, minio, prometheus, grafana, api-gateway, worker-ocr, worker-forensics |
 | Healthy in CI | 6 of 10 | the other 4 have no healthcheck by design |
 | End-to-end latency | 12 s upload→completed | Day-6 smoke run, CI log |
@@ -100,8 +100,12 @@ boots and drives end to end.
 - **Kubernetes has never been applied to a cluster.** Manifests are
   kubeconform-strict valid and cross-checked against compose, but pod startup,
   probes and HPA behaviour are unverified. Say so before it is discovered.
-- **No coverage measurement in CI.** Add `--cov` if a number is ever needed;
-  until then 56 passing tests is the honest claim.
+- **Coverage is measured now (78%, Day 7) but read its shape, not its total.**
+  The Day-7 tests took `forensics.py` 13%→88% and `report.py` 12%→96%; before
+  them the modules that ARE the product were the least tested in the repo,
+  which is the single most useful thing measuring coverage revealed.
+  `ocr.py` stays at 33%: it shells out to tesseract, and its behaviour is
+  verified end to end by the compose smoke test, unmeasured. Say it that way.
 - **Grafana starts in the stack but has no dashboards.** The Prometheus metrics
   are real and scraped; visualizing them is unbuilt work, not hidden work.
 - **The scoring is heuristic**, with the weights and their rationale in code.
