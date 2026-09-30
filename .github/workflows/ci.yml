@@ -41,18 +41,41 @@ jobs:
           pip install -r requirements.txt
 
       - name: Lint with ruff
+        # Pinned (Day-7, finding S13): this installed whatever ruff was newest,
+        # so an upstream lint-rule change could turn a green build red with no
+        # commit in this repo. Verified locally that 0.16.9 passes app + tests.
         run: |
-          pip install -q ruff
+          pip install -q ruff==0.16.9
           ruff check app tests
 
       - name: Security scan (pip-audit)
-        # continue-on-error: surfaces known-vulnerable dependency pins for
-        # a human to triage, doesn't block every push on a transitive CVE
-        # that may not be reachable from this app's actual code paths.
+        # Day-7 remediation (finding S3): this step used to be
+        #   pip-audit --desc || true
+        # together with continue-on-error -- non-blocking twice over, so the
+        # last green build before this change printed "Found 77 known
+        # vulnerabilities in 10 packages" and still reported success. That is
+        # how pillow 11.0.0 (19 advisories, reachable because Image.open() runs
+        # on attacker-supplied uploads), python-multipart 0.0.20 (reachable
+        # through the upload endpoints) and an unmaintained python-jose survived
+        # in a repo that claims security work.
+        #
+        # The pins have been bumped and the dead dependencies removed until the
+        # scan is genuinely clean -- verified both against the installed
+        # environment and against `pip-audit -r requirements.txt`, so the
+        # resolution CI performs is the one that was checked. Zero waivers.
+        #
+        # If a future advisory has no available fix, do NOT re-add `|| true`.
+        # Use `--ignore-vuln <ID>` with a comment saying why it is not reachable
+        # from this app's code paths and the date to re-review, so the waiver is
+        # visible here rather than buried in a log nobody reads.
+        #
+        # pip is upgraded again (the install step already did) to keep this step
+        # self-contained if reordered: pip-audit audits the whole environment,
+        # and an outdated installer itself trips PYSEC-2026-3721.
         run: |
+          python -m pip install --upgrade pip
           pip install -q pip-audit
-          pip-audit --desc || true
-        continue-on-error: true
+          pip-audit --desc
 
       - name: Run tests (isolated SQLite + fakeredis + fake Kafka/S3, no external services)
         env:

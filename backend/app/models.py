@@ -14,7 +14,25 @@ def _utcnow() -> datetime:
 # another advisory-lock consumer sharing the same database.
 _SCHEMA_LOCK_KEY = 740_202_601
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./certifake.db")
+# No default on purpose (Day-7 remediation, finding S8). This used to fall back
+# to "sqlite:///./certifake.db", so a production container started without
+# DATABASE_URL did not fail -- it quietly ran on a file-backed SQLite inside the
+# container, losing every row on restart and silently diverging from the
+# Postgres the rest of the stack was using. A missing database is a
+# misconfiguration, not a condition to paper over.
+#
+# Every real path sets it: docker-compose.yml sets it on the API and both
+# workers, backend/.env.example documents it, and tests/conftest.py points it at
+# a throwaway temp file before importing app/.
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is not set. Refusing to start: without it this process "
+        "would fall back to a file-backed SQLite database and silently lose "
+        "data on restart. Set it to the Postgres DSN "
+        "(see backend/.env.example), e.g. "
+        "postgresql://certifake:password@postgres:5432/certifake_db"
+    )
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

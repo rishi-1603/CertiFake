@@ -3,7 +3,24 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "CertiFake Pro"
-    secret_key: str = "change_me_to_a_long_random_secret"
+
+    # No default on purpose (Day-7 remediation, finding S14). This used to read
+    #   secret_key: str = "change_me_to_a_long_random_secret"
+    # which meant a deployment that forgot SECRET_KEY did not fail -- it silently
+    # signed every JWT with a string that is published in this repository, so
+    # anyone could mint a valid token for any user. The sibling DevTrack and
+    # Repay-Master projects made this field required on Day 3 for exactly this
+    # reason; CertiFake was the one that still had the fallback.
+    #
+    # Making it required turns a forgotten variable into a loud startup failure
+    # (pydantic-settings raises ValidationError at import). That is safe here
+    # because every path that loads this module already supplies it: the API
+    # service in docker-compose.yml uses `${SECRET_KEY:?...}`, the CI test job
+    # sets it, and tests/conftest.py sets it before importing app/. The worker
+    # containers deliberately do NOT set it -- verified by importing every worker
+    # dependency and confirming app.config is never loaded -- because they never
+    # touch auth.
+    secret_key: str
     access_token_expire_minutes: int = 60
     jwt_algorithm: str = "HS256"
 

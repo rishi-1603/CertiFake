@@ -5,7 +5,7 @@ or fabrication, using OCR text extraction and pixel-level forensic
 heuristics (not a trained ML classifier — see "How scoring works" below for
 exactly what is and isn't implemented).
 
-## Status: mid-rebuild (Day 1-6 of a 7-day hardening pass)
+## Status: 7-day hardening pass complete, plus the Day-7 security remediation
 
 This repository previously contained **three separate, overlapping
 implementations** of the same idea (a Streamlit app, a synchronous FastAPI
@@ -95,7 +95,10 @@ and unaffected.
     the pre-existing config are real for the first time.
 - **CI (GitHub Actions, Day 3):** `.github/workflows/ci.yml` runs on every
   push/PR to `main` — a `test` job (installs the same apt packages as
-  `backend/Dockerfile`, lints with `ruff`, runs `pip-audit` informationally,
+  `backend/Dockerfile`, lints with a pinned `ruff`, runs `pip-audit` as a
+  **blocking** gate (it used to run `pip-audit --desc || true` with
+  `continue-on-error`, i.e. non-blocking twice over — see "Security posture"
+  below),
   runs the full pytest suite against isolated SQLite + fakeredis + faked
   Kafka/S3, no external services required) and a `docker-build` job that
   verifies `backend/Dockerfile` actually builds. It deliberately does
@@ -293,13 +296,14 @@ Those four keys (`database-url`, `secret-key`, `minio-access-key`,
 kubectl apply -f k8s/deployment.yaml
 ```
 
-### Automated tests: 76 pytest tests covering auth, cross-user ownership
+### Automated tests: 82 pytest tests covering auth, cross-user ownership
   isolation, upload validation, the storage-outage failure path,
   rate-limiting (including a real Redis-outage simulation), the `/metrics`
   endpoint, the consumer loop's retry / DLQ / commit-ordering /
-  idempotency guarantees, concurrent-safe schema creation, and — added on
-  Day 7 — direct unit tests of the forensic scoring core and of PDF report
-  generation (`backend/tests/`).
+  idempotency guarantees, concurrent-safe schema creation, direct unit tests
+  of the forensic scoring core and of PDF report generation, and — added with
+  the Day-7 security remediation — the configuration and JWT-hardening tests
+  (`backend/tests/`).
 
   Coverage is measured in CI (`--cov=app`, production code only via
   `.coveragerc`): **78%** as of Day 7. The honest shape of that number:
@@ -312,6 +316,15 @@ kubectl apply -f k8s/deployment.yaml
   unreachable and longer OCR text is silently truncated. Recorded under
   Future Improvements; the test pins the truncation as it exists.
 
+  The six newest are `test_config_and_auth_hardening.py`. They pin the three
+  hardening changes below, including two that can only be tested in a
+  subprocess: because both values are read at import time and `conftest.py`
+  sets them for the rest of the suite, "the process refuses to start without
+  them" is not observable from inside a running test. One of them is a
+  regression test for the specific PyJWT advisory the bump addresses — a
+  forged token whose payload is JSON nested 20,000 deep must produce a 401,
+  not an unhandled `RecursionError` on the auth path.
+
   The last six are `test_schema_init.py`, added Day 6. They cover
   `app/models.py:init_db()`, which now serializes `create_all()` behind a
   Postgres advisory lock because api-gateway, worker-ocr and
@@ -322,6 +335,77 @@ kubectl apply -f k8s/deployment.yaml
   because the suite deliberately runs on SQLite and advisory locks have no
   SQLite equivalent. The file's docstring states what no test covers: that a
   real Postgres actually blocks the second process.
+
+### Security posture (Day-7 remediation)
+
+A dependency audit and a read of the auth, config and upload paths produced
+findings that are recorded with severity, evidence and practical exposure in
+the portfolio audit's security register. Everything rated HIGH or above for
+this repo is fixed here; the fixes are listed with what made each one matter.
+
+1. **The dependency scan now gates the build.** It previously ran
+   `pip-audit --desc || true` *and* carried `continue-on-error: true`. On the
+   last green build before the change it printed "Found 77 known
+   vulnerabilities in 10 packages" and reported `success`. The pin set is now
+   clean — `No known vulnerabilities found`, verified both against the
+   installed environment and against `pip-audit -r requirements.txt` so the
+   resolution CI performs is the one that was checked — and only then were the
+   two escape hatches removed. Zero waivers. The workflow comment states the
+   rule for the future: an unfixable advisory gets an explicit
+   `--ignore-vuln <ID>` with a written reason and a re-review date.
+2. **python-jose is gone; the JWT library is PyJWT 2.15.1.** python-jose 3.3.0
+   carried PYSEC-2024-232/233 (fixed in 3.4.0) and PYSEC-2025-185, which has
+   **no published fix**, and the project is effectively unmaintained. It also
+   pulled in `ecdsa`, which has an unfixed advisory of its own. The API surface
+   used was three calls (`encode`, `decode`, one `except`), so the migration is
+   exact rather than approximate, and a test asserts both that `jose` is no
+   longer imported and that token expiry is still enforced through the real
+   endpoint.
+3. **Pillow 11.0.0 → 12.3.0 (19 advisories) and python-multipart 0.0.20 →
+   0.0.32 (12).** Both were directly reachable rather than theoretical:
+   `Image.open()` runs on attacker-supplied files (`forensics.py:37,43`,
+   `ocr.py:37`) and untrusted uploads are parsed at `api.py:46,177,282`. The
+   forensics tests assert pixel-level scoring behaviour, so they are the
+   evidence the Pillow bump changed nothing about the product; all 82 pass.
+4. **`SECRET_KEY` is now required.** It used to default to
+   `change_me_to_a_long_random_secret` — a string committed to a public
+   repository, so a deployment that forgot the variable would still start and
+   still issue tokens that *anyone* could forge. The sibling DevTrack and
+   Repay-Master projects made this field required on Day 3; this repo was the
+   one still carrying the fallback. Missing values now fail at import.
+5. **`DATABASE_URL` is now required.** It used to fall back to
+   `sqlite:///./certifake.db`, so a container started without it ran silently
+   on a file-backed SQLite — no error, no persistence across restarts, and a
+   quiet divergence from the Postgres the rest of the stack was using. The
+   quick-start instructions below were updated to match, because the old ones
+   relied on that fallback.
+6. **Five dead dependencies removed**, each verified to have zero import sites
+   anywhere in `app/`, `tests/` or `scripts/` before deletion: `jinja2`
+   (carried an advisory), `PyPDF2` (carried an advisory, and its project was
+   renamed to `pypdf`, so the advisory's stated fix version is not even
+   installable under that name), `pdfplumber` (unused, and the reason
+   `pdfminer-six`'s four advisories were in this app at all), `aiofiles`, and
+   `alembic` — that last one had no `alembic.ini` and no `migrations/`
+   directory; schema creation goes through `models.init_db()` behind a Postgres
+   advisory lock. Keeping it was worse than dead weight, because it implied a
+   migration story that does not exist. (Alembic is real in the sibling
+   DevTrack, where a CI job runs the migrations against a live Postgres.)
+7. **Floating version specifiers pinned.** `numpy`, `opencv-python-headless`
+   and `psycopg2-binary` used `>=`, so two builds of the same commit could
+   install different code. All pins are now exact and match versions this suite
+   was run against. `ruff` is pinned in CI for the same reason: an unpinned
+   linter lets an upstream rule change break a build with no commit here.
+
+CORS is *not* a finding in this repo, and it is worth saying why rather than
+leaving it implicit: `allowed_origins` defaults to an explicit list of
+localhost origins, never `*`, so the wildcard-with-credentials pairing that the
+two sibling repos had cannot arise here.
+
+Not done, and not claimed: `passlib` 1.7.4 is unmaintained (no advisory
+against it today, so nothing forced the change) and would be better replaced by
+calling `bcrypt` directly; `psycopg2-binary` is convenient but the Postgres
+docs recommend a source build for production images. Both are in Future
+Improvements.
 
 ### Future Improvements (deliberately not built yet, with the reason each is deferred)
 
@@ -342,6 +426,17 @@ kubectl apply -f k8s/deployment.yaml
   environment or faking the binary; the compose smoke test already verifies it
   end to end against the real thing. Adding fast, faked unit tests for the
   field-extraction regexes specifically is worthwhile and unbuilt.
+- **`passlib` 1.7.4 is unmaintained.** No advisory is filed against it, so
+  nothing forced a change during the Day-7 remediation, and swapping it while
+  touching the auth path would have mixed two kinds of risk in one commit.
+  Calling `bcrypt` directly (or moving to argon2) removes a dependency that
+  will not receive fixes; the visible symptom today is a trapped
+  "(trapped) error reading bcrypt version" warning, because passlib 1.7.4
+  predates bcrypt 4.x's API.
+- **`psycopg2-binary` in the production image.** Fine for CI and for this
+  compose stack; the psycopg2 docs recommend building from source (or using
+  psycopg 3) for production, because the binary wheels bundle a libpq that may
+  not match the target platform.
 - **Resolved (Day 6, verified by a passing CI run):** CI *does* now run the
   full `docker-compose` stack end-to-end, and there *is* a real integration
   test against actual Kafka/Postgres/MinIO containers. Both of the bullets
@@ -521,11 +616,13 @@ sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils libmagic1
 
 cp .env.example .env   # then set a real SECRET_KEY (see the comment in that file)
 
-# Quickest way to try the API without Kafka/Postgres/MinIO running: SQLite
-# is used automatically if DATABASE_URL is unset, but Kafka/S3 calls will
-# fail fast (503) without those services -- for the full pipeline, use
-# docker-compose instead:
-uvicorn app.api:app --reload
+# Quickest way to try the API without Kafka/Postgres/MinIO running: point
+# DATABASE_URL at a local SQLite file yourself. It is NOT optional any more --
+# the implicit sqlite fallback was removed in the Day-7 remediation, because a
+# container started without DATABASE_URL used to run silently on a file-backed
+# database and lose it on restart. Kafka/S3 calls still fail fast (503) without
+# those services; for the full pipeline, use docker-compose instead:
+DATABASE_URL=sqlite:///./certifake.db uvicorn app.api:app --reload
 ```
 
 ### Full stack (Postgres + Kafka + MinIO + workers)
@@ -550,7 +647,7 @@ pip install -r requirements.txt
 pytest -v
 ```
 
-76/76 tests currently pass. They use a throwaway SQLite database and mock
+82/82 tests currently pass. They use a throwaway SQLite database and mock
 Kafka/S3 calls at the Python function boundary for most tests; one test
 suite (`test_failure_modes.py`) points the *real* Kafka/S3 client code at
 an intentionally unreachable address to verify the 503 failure-handling

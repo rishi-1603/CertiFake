@@ -20,9 +20,18 @@ own (see the ownership check in app/api.py).
 import uuid
 from datetime import datetime, timedelta, timezone
 
+# PyJWT rather than python-jose (Day-7 remediation, finding S2). python-jose
+# 3.3.0 carried PYSEC-2024-232/233 (fixed in 3.4.0) and PYSEC-2025-185, which
+# has no published fix at all, and the project is effectively unmaintained --
+# it also dragged in `ecdsa`, which has its own unfixed advisory. The API
+# surface used here is three calls, so the migration is exact rather than
+# approximate: encode/decode keep the same signatures, and `JWTError` becomes
+# `PyJWTError`, which is likewise the base class for ExpiredSignatureError and
+# InvalidSignatureError, so the 401 behaviour below is unchanged.
+import jwt
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
+from jwt.exceptions import PyJWTError
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
@@ -96,7 +105,7 @@ def require_user(
         raise HTTPException(status_code=401, detail="Missing bearer token.")
     try:
         payload = jwt.decode(credentials.credentials, settings.secret_key, algorithms=[settings.jwt_algorithm])
-    except JWTError:
+    except PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token.")
 
     user_id = payload.get("sub")

@@ -1,39 +1,92 @@
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
-python-multipart==0.0.20
+# ---------------------------------------------------------------------------
+# Every version below is pinned exactly (Day-7 remediation, finding S13).
+# `numpy`, `opencv-python-headless` and `psycopg2-binary` previously used `>=`,
+# so two builds of the same commit could install different code -- a
+# reproducibility and supply-chain problem, and it made the dependency audit a
+# moving target. Each pin matches a version this test suite was run against.
+#
+# The resulting set is clean under `pip-audit`: "No known vulnerabilities
+# found", with zero waivers. The CI security-scan step gates on that (it used
+# to run `pip-audit --desc || true` with continue-on-error, so a green build
+# once reported 77 known vulnerabilities across 10 packages).
+# ---------------------------------------------------------------------------
+
+# Web layer. fastapi 0.115.6 -> 0.142.2 moves starlette 0.41.3 -> 1.7.0,
+# clearing 14 advisories; uvicorn is bumped with it because it is the server
+# that actually runs starlette.
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+# 0.0.20 -> 0.0.32 (finding S4): 12 advisories, and unlike the sibling
+# DevTrack this app has a real untrusted-multipart surface -- uploads are
+# parsed at app/api.py:46,177,282 -- so these were directly reachable.
+python-multipart==0.0.32
 pydantic==2.10.4
 pydantic-settings==2.7.0
 email-validator==2.2.0
-python-jose[cryptography]==3.3.0
+
+# Auth. PyJWT replaces python-jose[cryptography]==3.3.0 (finding S2):
+# python-jose carried PYSEC-2024-232/233 plus PYSEC-2025-185, which has no
+# published fix, and it pulled in `ecdsa`, which has an unfixed advisory of its
+# own. Both are unmaintained. The API surface used was three calls, so the
+# migration is exact -- see the comment in app/auth.py.
+PyJWT==2.15.1
 passlib[bcrypt]==1.7.4
 # Pinned: passlib 1.7.4's bcrypt backend self-test crashes under bcrypt
 # 5.x's new API (ValueError: password cannot be longer than 72 bytes) --
 # found and fixed during Day 1 test-suite verification.
 bcrypt==4.2.1
-jinja2==3.1.5
-aiofiles==24.1.0
-pillow==11.0.0
-numpy>=2.3.2
-opencv-python-headless>=4.12.0.88
+
+# Imaging, forensics, OCR and report generation.
+# pillow 11.0.0 -> 12.3.0 (finding S5): 19 advisories, directly reachable
+# because Image.open() runs on attacker-supplied files at forensics.py:37,43
+# and ocr.py:37. The forensics tests assert pixel-level behaviour, so they are
+# the check that this bump did not change the scoring.
+pillow==12.3.0
+numpy==2.5.3
+opencv-python-headless==5.0.0.93
 pytesseract==0.3.13
 python-magic==0.4.27
 reportlab==4.2.5
-PyPDF2==3.0.1
 pdf2image==1.17.0
-pdfplumber==0.11.5
+
+# Messaging, object storage, database, metrics.
 confluent-kafka==2.3.0
 boto3==1.34.0
 sqlalchemy==2.0.54
-psycopg2-binary>=2.9.10
+psycopg2-binary==2.9.13
 redis==5.0.1
 prometheus-client==0.21.1
-alembic==1.13.1
 
-# Test tooling
-pytest==8.3.4
+# Test tooling. pytest 8.3.4 -> 9.1.1 (finding S11); pytest-cov bumped for
+# compatibility with pytest 9.
+pytest==9.1.1
 # Added Day 7 so coverage is MEASURED in CI rather than absent: this repo's
 # test job previously ran bare `pytest`, which is why no coverage percentage
-# existed anywhere and none was ever quoted. Pin matches DevTrack's.
-pytest-cov==5.0.0
+# existed anywhere and none was ever quoted.
+pytest-cov==7.1.0
 httpx==0.28.1
 fakeredis==2.26.1
+
+# ---------------------------------------------------------------------------
+# Removed on Day 7 -- dependencies that nothing imported (finding S12 and the
+# audit's "what to remove" list). Each was verified to have zero import sites
+# anywhere in app/, tests/ or scripts/ before being dropped, and two of them
+# were carrying advisories purely by being installed:
+#
+#   jinja2==3.1.5      unused; carried PYSEC-2026-1471
+#   PyPDF2==3.0.1      unused; carried PYSEC-2026-1835. Its project was renamed
+#                      to `pypdf`, so the advisory's "fix version" (3.9.0) is not
+#                      even installable under this name -- removal was the only
+#                      real fix.
+#   pdfplumber==0.11.5 unused; pulled in pdfminer-six, which carried 4
+#                      advisories this app inherited for a library it never
+#                      called.
+#   aiofiles==24.1.0   unused.
+#   alembic==1.13.1    unused, and there is no alembic.ini or migrations/
+#                      directory in this repo -- schema creation goes through
+#                      models.init_db() with a Postgres advisory lock instead.
+#                      Keeping the pin was worse than dead weight: it implied a
+#                      migration story that does not exist. (The sibling DevTrack
+#                      is where Alembic is real, with a CI job that runs the
+#                      migrations against a live Postgres.)
+# ---------------------------------------------------------------------------

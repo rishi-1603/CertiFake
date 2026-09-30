@@ -5,7 +5,9 @@ Test count and coverage come from the CI `test` job, which gained `--cov=app`
 on Day 7 — before that no percentage existed and none was quoted, which was
 the honest position at the time. Coverage is measured on production code only
 (`.coveragerc` omits the test directory); see the table and the note below for
-what the 78% does and does not mean.*
+what the 78% does and does not mean. Re-measured again after the Day-7
+security remediation: 82 cases, 78% of 759 production statements, and a
+dependency audit that is clean **and** blocking.*
 
 ## Resume bullet points (pick 2-3 based on space)
 
@@ -42,8 +44,11 @@ boots and drives end to end.
 
 | Claim | Value | Source |
 |---|---|---|
-| pytest cases | 76 | CI `test` job; `def test_` count matches |
-| Coverage (production code) | 78% | CI `--cov=app` with `.coveragerc` omitting tests, added Day 7 |
+| pytest cases | 82 | CI `test` job; `def test_` count matches (76 before the Day-7 hardening tests) |
+| Coverage (production code) | 78% | CI `--cov=app` with `.coveragerc` omitting tests; 759 stmts, 166 missed |
+| Dependency audit | clean, and blocking | `pip-audit` on the pinned set: `No known vulnerabilities found`; was 77 across 10 packages, and the CI step had both `\|\| true` and `continue-on-error` |
+| JWT library | PyJWT 2.15.1 | `app/auth.py`; python-jose removed — unmaintained, and PYSEC-2025-185 has no published fix |
+| Required config | `SECRET_KEY`, `DATABASE_URL` | no insecure defaults left; subprocess tests assert the process refuses to start without them |
 | Compose services | 10 | postgres, redis, zookeeper, kafka, minio, prometheus, grafana, api-gateway, worker-ocr, worker-forensics |
 | Healthy in CI | 6 of 10 | the other 4 have no healthcheck by design |
 | End-to-end latency | 12 s upload→completed | Day-6 smoke run, CI log |
@@ -95,6 +100,46 @@ boots and drives end to end.
   Be honest that the run proves the stack boots *with* the lock, not that a
   collision was observed and prevented.
 
+**Security**
+- Q: What did the security review actually find, and what did you do about it?
+  A: Seven things worth naming. (1) The CI dependency scan was non-blocking
+  twice over — `pip-audit --desc || true` plus `continue-on-error` — so a green
+  build was reporting 77 known vulnerabilities across 10 packages. (2) The JWT
+  library was python-jose 3.3.0: unmaintained, with one advisory that has no
+  published fix at all, dragging in `ecdsa` which has another. (3) Pillow
+  11.0.0 had 19 advisories and python-multipart 12, and both were *reachable*
+  rather than theoretical — `Image.open()` runs on uploaded files and the upload
+  endpoints parse untrusted multipart. (4) `SECRET_KEY` defaulted to a string
+  committed to a public repo, so a deployment that forgot the variable would
+  still issue tokens anyone could forge. (5) `DATABASE_URL` silently fell back
+  to a file-backed SQLite, so a misconfigured container lost data on restart
+  without erroring. (6) Five dependencies were installed that nothing imported,
+  including `alembic` with no migrations directory — dead weight that implied a
+  migration story the repo does not have. (7) Three version specifiers were
+  floating, so two builds of one commit could install different code. All seven
+  are fixed; the scan is clean with zero waivers, and only then did I make it
+  block.
+- Q: Which of those advisories were you actually vulnerable to?
+  A: That distinction is the part worth being precise about. Reachable: Pillow
+  and python-multipart, because untrusted bytes go straight into them; and the
+  PyJWT payload-recursion DoS after the bump, which is why there is a
+  regression test asserting a forged 20,000-deep-nested token returns 401
+  rather than an unhandled `RecursionError`. Not reachable, and I would say so
+  rather than inflate the count: the Starlette advisories concern
+  `StaticFiles`/`FileResponse`, `request.url.hostname`, bare `HTTPEndpoint` and
+  urlencoded form limits — this app uses none of them. A CVE count is not a
+  risk assessment.
+- Q: Why did you remove `alembic` instead of writing migrations?
+  A: Because the pin was a claim the repo could not support. There was no
+  `alembic.ini` and no `migrations/`; schema creation runs through
+  `models.init_db()` behind a Postgres advisory lock, which is a legitimate
+  design for this app and is tested for concurrent safety. Writing migrations
+  would have been the better engineering choice if the schema were evolving
+  under load — but silently keeping a dependency that implies it, in a repo
+  being read for evidence, was the worse option. The sibling DevTrack is where
+  Alembic is real, and there a CI job runs the migrations against live
+  Postgres.
+
 ## Trade-offs / what you'd improve
 
 - **Kubernetes has never been applied to a cluster.** Manifests are
@@ -106,6 +151,13 @@ boots and drives end to end.
   which is the single most useful thing measuring coverage revealed.
   `ocr.py` stays at 33%: it shells out to tesseract, and its behaviour is
   verified end to end by the compose smoke test, unmeasured. Say it that way.
+- **`passlib` 1.7.4 is unmaintained and `psycopg2-binary` is not what the
+  Postgres docs recommend for production images.** Neither had an advisory, so
+  neither was forced by the Day-7 remediation, and changing the password-hashing
+  library in the same commit as the JWT migration would have mixed two kinds of
+  risk. Both are in the README's Future Improvements with the reasoning; the
+  visible symptom of the passlib/bcrypt version gap is a trapped
+  "(trapped) error reading bcrypt version" warning in the logs.
 - **Grafana starts in the stack but has no dashboards.** The Prometheus metrics
   are real and scraped; visualizing them is unbuilt work, not hidden work.
 - **The scoring is heuristic**, with the weights and their rationale in code.
