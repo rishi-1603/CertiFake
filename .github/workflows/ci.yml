@@ -69,11 +69,22 @@ jobs:
         # from this app's code paths and the date to re-review, so the waiver is
         # visible here rather than buried in a log nobody reads.
         #
-        # pip is upgraded again (the install step already did) to keep this step
-        # self-contained if reordered: pip-audit audits the whole environment,
-        # and an outdated installer itself trips PYSEC-2026-3721.
+        # pip AND setuptools are upgraded here (the dependency step already
+        # upgraded pip) to keep this step self-contained if reordered: pip-audit
+        # audits the WHOLE environment, including build tools the runner
+        # preinstalls that this repo never ships, and outdated ones trip their
+        # own advisories -- PYSEC-2026-3721 for pip, and PYSEC-2026-3447 for the
+        # runner's setuptools 79.0.1, which is exactly what turned this job red
+        # once the audit became blocking.
+        #
+        # Upgrading is the right response; waiving is not. `--ignore-vuln` here
+        # would hide the same advisory if it ever reached a shipped image. Which
+        # is why the docker-build job also scans the IMAGE from the inside, as
+        # built, with nothing upgraded first: that scan cannot be satisfied by
+        # fixing the runner, so if this one is ever green because of a tool
+        # upgrade, that one still tells the truth about the artifact.
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip "setuptools>=83.0.0"
           pip install -q pip-audit
           pip-audit --desc
 
@@ -187,6 +198,31 @@ jobs:
 
       - name: Build image
         run: docker build -t certifake-backend:ci backend
+      - name: Security scan of the built image (audits what actually ships)
+        # WHY A SECOND SCAN, WHEN THE `test` JOB ALREADY RUNS pip-audit
+        # -------------------------------------------------------------
+        # That one audits the RUNNER's Python. It proves the pins resolve cleanly
+        # on this interpreter, but the artifact that ships is this image, built
+        # FROM python:3.11-slim-trixie, which contributes its own pip and setuptools -- neither
+        # appears in requirements.txt, so no pin bump can reach them and no
+        # runner-side scan can see them. Not hypothetical: the runner scan went
+        # red on setuptools 79.0.1 (PYSEC-2026-3447, fix 83.0.0), a package this
+        # repo never installs.
+        #
+        # This audits the image AS BUILT. pip-audit is installed at runtime so it
+        # never becomes a layer of the shipped image, and nothing is upgraded
+        # before the scan: if the base layer carries a vulnerable build tool the
+        # job must go red, so the fix lands in the Dockerfile -- where it changes
+        # what ships -- instead of in a command that only changes what the
+        # scanner happens to see.
+        run: |
+          docker run --rm --entrypoint sh certifake-backend:ci -c '
+            set -e
+            pip install --quiet --no-cache-dir pip-audit
+            echo "--- build tools the base image contributed ---"
+            pip freeze | grep -iE "^(pip|setuptools|wheel)==" || echo "(none reported)"
+            pip-audit --desc
+          '
 
   # ===========================================================================
   # Boots the REAL 10-service stack and drives one genuine request through it.
