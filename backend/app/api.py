@@ -89,6 +89,19 @@ app.add_middleware(
 # when all three boot against one fresh database. A second bare create_all()
 # here used to do exactly that -- it duplicated the work and bypassed the lock.
 # See app/models.py:init_db for the full reasoning.
+
+# --- OpenAPI error documentation (final-audit Day 3, defect D1-9) ------------
+# Until this pass the schema described only success codes plus FastAPI's own 422,
+# so every failure the API really returns was invisible to a reader of /docs or a
+# generated client. Each description below states WHEN the code happens; every
+# code listed was observed against a running instance (see
+# portfolio-strategy/day1/certifake-endpoint-sweep.md for the raw sweep).
+_ERR_401 = {401: {"description": "Missing, malformed, or expired bearer token."}}
+_ERR_ANALYSIS_404 = {404: {"description": (
+    "No analysis with this id is owned by the requesting user. An id that does not "
+    "exist returns the same response, so valid ids cannot be probed."
+)}}
+
 producer = get_kafka_producer()
 
 @app.get("/health")
@@ -118,19 +131,21 @@ def metrics():
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
-@app.post("/auth/register", response_model=TokenResponse, status_code=201)
+@app.post("/auth/register", response_model=TokenResponse, status_code=201,
+          responses={409: {"description": "An account with this email already exists."}})
 def auth_register(payload: RegisterRequest, db: Session = Depends(_get_db)):
     user, token = register(db, payload.email, payload.password)
     return {"access_token": token, "token_type": "bearer"}
 
 
-@app.post("/auth/login", response_model=TokenResponse)
+@app.post("/auth/login", response_model=TokenResponse,
+          responses={401: {"description": "Email or password is incorrect. Both failures return the same message."}})
 def auth_login(payload: LoginRequest, db: Session = Depends(_get_db)):
     user, token = login(db, payload.email, payload.password)
     return {"access_token": token, "token_type": "bearer"}
 
 
-@app.get("/auth/me", response_model=UserRead)
+@app.get("/auth/me", response_model=UserRead, responses=_ERR_401)
 def auth_me(user: User = Depends(require_user)):
     return UserRead(id=user.id, email=user.email)
 
@@ -172,7 +187,16 @@ def _rate_limit_analyze(user: User = Depends(require_user)) -> None:
         )
 
 
-@app.post("/analyze", response_model=AnalyzeAcceptedResponse, status_code=202)
+@app.post("/analyze", response_model=AnalyzeAcceptedResponse, status_code=202,
+          responses={
+              **_ERR_401,
+              400: {"description": "The upload was rejected: unsupported content type, "
+                                   "unexpected extension, or bytes that do not match the "
+                                   "declared type (magic-byte check)."},
+              413: {"description": "File larger than MAX_UPLOAD_MB (default 10)."},
+              429: {"description": "Rate limit reached (ANALYZE_RATE_LIMIT_PER_MINUTE per user per minute)."},
+              503: {"description": "Kafka or object storage is unavailable. The request is safe to retry."},
+          })
 async def analyze(
     file: UploadFile = File(...),
     user: User = Depends(require_user),
@@ -243,7 +267,8 @@ async def analyze(
         analyze_request_duration_seconds.observe(time.monotonic() - start)
 
 
-@app.get("/status/{analysis_id}", response_model=AnalysisStatusResponse)
+@app.get("/status/{analysis_id}", response_model=AnalysisStatusResponse,
+         responses={**_ERR_401, **_ERR_ANALYSIS_404})
 def get_status(analysis_id: str, user: User = Depends(require_user), db: Session = Depends(_get_db)):
     analysis = _get_owned_analysis_or_404(db, analysis_id, user)
     return {
@@ -258,7 +283,9 @@ def get_status(analysis_id: str, user: User = Depends(require_user), db: Session
     }
 
 
-@app.get("/heatmap/{analysis_id}")
+@app.get("/heatmap/{analysis_id}",
+         responses={**_ERR_401, **_ERR_ANALYSIS_404,
+                    503: {"description": "Object storage is unavailable. The request is safe to retry."}})
 def get_heatmap(analysis_id: str, user: User = Depends(require_user), db: Session = Depends(_get_db)):
     _get_owned_analysis_or_404(db, analysis_id, user)
     heatmap_key = f"{user.id}/{analysis_id}/heatmap.png"
@@ -271,7 +298,8 @@ def get_heatmap(analysis_id: str, user: User = Depends(require_user), db: Sessio
     return Response(content=file_bytes, media_type="image/png")
 
 
-@app.get("/report/{analysis_id}")
+@app.get("/report/{analysis_id}",
+         responses={**_ERR_401, **_ERR_ANALYSIS_404})
 def get_report(analysis_id: str, user: User = Depends(require_user), db: Session = Depends(_get_db)):
     analysis = _get_owned_analysis_or_404(db, analysis_id, user)
     if analysis.status != "completed":

@@ -45,7 +45,7 @@ boots and drives end to end.
 | Claim | Value | Source |
 |---|---|---|
 | pytest cases | 89 | CI `test` job; `def test_` count matches (76 before the Day-7 hardening tests) |
-| Coverage (production code) | 78% | CI `--cov=app` with `.coveragerc` omitting tests; 768 stmts, 167 missed |
+| Coverage (production code) | 79% | CI `--cov=app` with `.coveragerc` omitting tests; 787 stmts, 168 missed (measured 2026-10-08) |
 | Dependency audit | clean, and blocking | `pip-audit` on the pinned set: `No known vulnerabilities found`; was 77 across 10 packages, and the CI step had both `\|\| true` and `continue-on-error` |
 | JWT library | PyJWT 2.15.1 | `app/auth.py`; python-jose removed — unmaintained, and PYSEC-2025-185 has no published fix |
 | Required config | `SECRET_KEY`, `DATABASE_URL` | no insecure defaults left; subprocess tests assert the process refuses to start without them |
@@ -150,7 +150,7 @@ boots and drives end to end.
 - **Kubernetes has never been applied to a cluster.** Manifests are
   kubeconform-strict valid and cross-checked against compose, but pod startup,
   probes and HPA behaviour are unverified. Say so before it is discovered.
-- **Coverage is measured now (78%, Day 7) but read its shape, not its total.**
+- **Coverage is measured now (79%, Day 7) but read its shape, not its total.**
   The Day-7 tests took `forensics.py` 13%→88% and `report.py` 12%→96%; before
   them the modules that ARE the product were the least tested in the repo,
   which is the single most useful thing measuring coverage revealed.

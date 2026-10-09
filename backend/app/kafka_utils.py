@@ -5,9 +5,13 @@ from datetime import datetime, timezone
 
 from confluent_kafka import Consumer, KafkaException, Producer
 
+from app.env_utils import env_or_default
+
 logger = logging.getLogger("certifake.kafka")
 
-KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+# Same class of bug as MINIO_ENDPOINT below is fixed in s3_utils (D1-3): a blank
+# value in .env must fail with its own name, not inside the client library.
+KAFKA_BOOTSTRAP_SERVERS = env_or_default("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 
 # How long produce_event will wait for the broker to accept the message
 # before giving up. Producer.flush() with no timeout blocks *indefinitely*

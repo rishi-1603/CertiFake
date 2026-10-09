@@ -33,14 +33,25 @@ from app.config import MIN_SECRET_KEY_BYTES
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
-def _import_in_subprocess(module: str, extra_env: dict | None = None):
-    """Import `module` in a clean interpreter with the named vars removed."""
+def _import_in_subprocess(module: str, extra_env: dict | None = None, cwd: Path | None = None):
+    """Import `module` in a clean interpreter with the named vars removed.
+
+    `cwd` matters and is not incidental: app/config.py uses
+    `SettingsConfigDict(env_file=".env")`, which pydantic-settings resolves
+    relative to the process's working directory. Running the subprocess in the
+    backend directory meant that any developer who had followed the README and
+    created backend/.env would see this test fail — the file re-supplied
+    SECRET_KEY, the import succeeded, and the assertion "it must refuse to
+    start" was reported as a failure of the *code*. The tests therefore run in a
+    directory with no .env in it (see the caller), and PYTHONPATH still points at
+    the backend so the import itself is unchanged. Found on Day 5 of the audit.)
+    """
     env = {k: v for k, v in os.environ.items() if k not in ("DATABASE_URL", "SECRET_KEY")}
     env["PYTHONPATH"] = str(BACKEND_DIR)
     env.update(extra_env or {})
     return subprocess.run(
         [sys.executable, "-c", f"import {module}"],
-        cwd=str(BACKEND_DIR),
+        cwd=str(cwd or BACKEND_DIR),
         env=env,
         capture_output=True,
         text=True,
@@ -49,7 +60,14 @@ def _import_in_subprocess(module: str, extra_env: dict | None = None):
 
 
 class TestMissingConfigurationFailsLoudly:
-    def test_missing_database_url_refuses_to_start(self):
+    @pytest.fixture()
+    def no_env_cwd(self, tmp_path):
+        """A working directory with no .env file in it -- see _import_in_subprocess.
+        Without this, the tests pass on a fresh clone and fail on the machine of
+        anyone who set the project up as the README describes."""
+        return tmp_path
+
+    def test_missing_database_url_refuses_to_start(self, no_env_cwd):
         """S8: the old default was `sqlite:///./certifake.db`.
 
         A production container missing DATABASE_URL used to start happily on a
@@ -58,7 +76,7 @@ class TestMissingConfigurationFailsLoudly:
         the stack was writing to.
         """
         result = _import_in_subprocess(
-            "app.models", extra_env={"SECRET_KEY": "not-used-by-this-import"}
+            "app.models", extra_env={"SECRET_KEY": "not-used-by-this-import"}, cwd=no_env_cwd
         )
         assert result.returncode != 0, "importing app.models without DATABASE_URL must fail"
         assert "DATABASE_URL" in result.stderr
@@ -67,7 +85,7 @@ class TestMissingConfigurationFailsLoudly:
         assert "Refusing to start" in result.stderr
         assert "postgresql://" in result.stderr
 
-    def test_missing_secret_key_refuses_to_start(self):
+    def test_missing_secret_key_refuses_to_start(self, no_env_cwd):
         """S14: the old default was `change_me_to_a_long_random_secret`.
 
         That string is committed to a public repository, so a deployment that
@@ -76,7 +94,7 @@ class TestMissingConfigurationFailsLoudly:
         user. Failing at import is the only safe behaviour.
         """
         result = _import_in_subprocess(
-            "app.config", extra_env={"DATABASE_URL": "sqlite:///./not-used.db"}
+            "app.config", extra_env={"DATABASE_URL": "sqlite:///./not-used.db"}, cwd=no_env_cwd
         )
         assert result.returncode != 0, "importing app.config without SECRET_KEY must fail"
         assert "secret_key" in result.stderr

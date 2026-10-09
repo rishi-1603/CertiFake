@@ -1,12 +1,14 @@
-import os
-
 import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+from app.env_utils import env_or_default
+
+# env_or_default, not os.getenv: a .env that sets MINIO_ENDPOINT= (blank) used to
+# hand boto3 an empty endpoint and die at import with "Invalid endpoint:" (D1-3).
+MINIO_ENDPOINT = env_or_default("MINIO_ENDPOINT", "http://localhost:9000")
+MINIO_ACCESS_KEY = env_or_default("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = env_or_default("MINIO_SECRET_KEY", "minioadmin")
 BUCKET_NAME = "certifake-data"
 
 # Explicit short timeouts + a small retry budget so that a MinIO/S3 outage

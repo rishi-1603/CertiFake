@@ -306,11 +306,12 @@ kubectl apply -f k8s/deployment.yaml
   (`backend/tests/`).
 
   Coverage is measured in CI (`--cov=app`, production code only via
-  `.coveragerc`): **78%** as of Day 7. The honest shape of that number:
-  `app/forensics.py` went from 13% to 88% and `app/report.py` from 12% to 96%
-  once the Day-7 tests landed, while `app/ocr.py` remains at 33% because it
-  shells out to tesseract — its behaviour is verified end to end by the
-  compose smoke test in CI, which does not measure coverage. Writing those
+  `.coveragerc`): **79%** (787 statements, 168 missed), measured 2026-10-08.
+  The honest shape of that number: `app/forensics.py` 88% and `app/report.py`
+  96%, while `app/ocr.py` remains at 33% because it shells out to tesseract —
+  its behaviour is verified end to end by the compose smoke test in CI, which
+  does not measure coverage — and `app/kafka_utils.py` sits at 59% (its
+  broker-connection paths are not unit-tested). Writing those
   tests also surfaced a real limitation: `create_report()` slices the OCR
   preview to 32 wrapped lines, so the `showPage()` branch below it is
   unreachable and longer OCR text is silently truncated. Recorded under
@@ -649,12 +650,21 @@ one Python package (`backend/app/`) now, not three.
 
 ```bash
 cd backend
-python -m venv venv && source venv/bin/activate
+python3.11 -m venv venv && source venv/bin/activate   # 3.11 specifically: see note below
 pip install -r requirements.txt
 
 # System dependencies (Ubuntu/Debian) for OCR + PDF handling:
 sudo apt-get update
 sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils libmagic1
+# On Debian 13+ the libmagic package is named libmagic1t64 (the t64 rename);
+# `libmagic1` has no installation candidate there and apt stops with
+# "unable to locate package".
+
+# Use Python 3.11, not whatever `python` points at. confluent-kafka (the Kafka
+# client) ships wheels only up to 3.11 -- on 3.12+ pip falls back to building
+# from source and fails with `fatal error: librdkafka/rdkafka.h: No such file
+# or directory` unless librdkafka-dev is installed. CI and the Docker images
+# both use 3.11.
 
 cp .env.example .env   # then set a real SECRET_KEY (see the comment in that file)
 

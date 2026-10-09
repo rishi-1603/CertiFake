@@ -31,6 +31,23 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60
     jwt_algorithm: str = "HS256"
 
+    @field_validator("redis_url")
+    @classmethod
+    def _redis_url_must_not_be_blank(cls, value: str) -> str:
+        """Same failure family as D1-3: a key that is set but empty is a mistake.
+
+        `redis_url` has a working default and is only read by the API process, so
+        an absent key is fine. A blank one used to reach redis-py and blow up on
+        the first /analyze rate-limit check instead of at startup, where the
+        message can still name the variable.
+        """
+        if not value.strip():
+            raise ValueError(
+                "redis_url is blank. Remove REDIS_URL from the environment to use the "
+                "default, or set it to a real redis:// URL."
+            )
+        return value
+
     @field_validator("secret_key")
     @classmethod
     def _secret_key_must_be_long_enough(cls, value: str) -> str:
