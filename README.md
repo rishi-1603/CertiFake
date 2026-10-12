@@ -105,7 +105,7 @@ and unaffected.
   **not** attempt `docker compose up`: this project's compose stack
   (Postgres + Redis + Zookeeper + Kafka + MinIO + 3 app services) was
   judged too heavy to reliably boot inside a shared CI runner within this
-  7-day pass's scope — see "What is NOT implemented yet" below.
+  7-day pass's scope — see "Future Improvements" below.
 - **Reliable Kafka consumption (Day 4):** bounded retry with exponential
   backoff + full jitter, a real dead-letter topic, manual offset commits,
   and per-stage idempotency — all in one shared loop
@@ -679,7 +679,7 @@ This starts Postgres, Kafka (+ Zookeeper), MinIO, the API gateway, both
 workers, and Prometheus/Grafana. As of Day 3, Prometheus has real targets
 to scrape (`api-gateway:8000`, `worker-ocr:8000`, `worker-forensics:8000`,
 all serving `/metrics`) — no Grafana dashboards have been built for them
-yet (see "What is NOT implemented yet" above).
+yet (see "Future Improvements" above).
 
 ### Tests
 
