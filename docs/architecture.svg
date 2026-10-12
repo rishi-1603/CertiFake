@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">CertiFake certificate forensics architecture</title>
+  <desc id="desc">A React client calls a FastAPI gateway which stores documents in S3-compatible MinIO, tracks state in PostgreSQL, and publishes Kafka events consumed by OCR and forensics workers.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#52606d"/></marker>
+    <style>
+      .bg{fill:#f7fafc}.box{fill:#fff;stroke:#2d3748;stroke-width:2;rx:12}.store{fill:#edf6ff;stroke:#3182ce;stroke-width:2;rx:12}.worker{fill:#fffaf0;stroke:#d69e2e;stroke-width:2;rx:12}.obs{fill:#f0fff4;stroke:#38a169;stroke-width:2;rx:12}.title{font:700 26px system-ui,sans-serif;fill:#1a202c}.head{font:700 16px system-ui,sans-serif;fill:#1a202c}.body{font:14px system-ui,sans-serif;fill:#4a5568}.label{font:12px system-ui,sans-serif;fill:#718096}.line{stroke:#52606d;stroke-width:2;fill:none;marker-end:url(#arrow)}.dash{stroke:#718096;stroke-width:2;stroke-dasharray:7 6;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect class="bg" width="1280" height="760"/>
+  <text class="title" x="50" y="55">CertiFake — certificate forensics pipeline</text>
+  <text class="body" x="50" y="82">Heuristic OCR + pixel forensics; not a trained authenticity classifier</text>
+
+  <rect class="box" x="55" y="140" width="205" height="110"/>
+  <text class="head" x="80" y="175">React client</text><text class="body" x="80" y="202">Vercel frontend</text><text class="body" x="80" y="223">JWT + multipart upload</text>
+  <rect class="box" x="330" y="120" width="270" height="150"/>
+  <text class="head" x="355" y="157">FastAPI gateway</text><text class="body" x="355" y="185">auth + upload validation</text><text class="body" x="355" y="206">magic bytes / size / ownership</text><text class="body" x="355" y="227">202 + status polling</text><text class="label" x="355" y="251">/health /metrics /docs</text>
+  <path class="line" d="M260 195 H330"/>
+  <rect class="store" x="685" y="115" width="225" height="120"/>
+  <text class="head" x="710" y="150">PostgreSQL</text><text class="body" x="710" y="178">users + analyses</text><text class="body" x="710" y="199">processing state</text><text class="body" x="710" y="220">OCR / score / verdict</text>
+  <rect class="store" x="970" y="115" width="255" height="120"/>
+  <text class="head" x="995" y="150">MinIO / S3</text><text class="body" x="995" y="178">raw uploads</text><text class="body" x="995" y="199">heatmap PNG</text><text class="body" x="995" y="220">PDF report artifacts</text>
+  <path class="line" d="M600 175 H685"/><text class="label" x="617" y="164">row</text><path class="line" d="M600 215 H970"/><text class="label" x="760" y="207">object storage</text>
+
+  <rect class="worker" x="330" y="375" width="270" height="135"/>
+  <text class="head" x="355" y="412">Kafka backbone</text><text class="body" x="355" y="440">certificate_uploaded</text><text class="body" x="355" y="461">ocr_completed</text><text class="body" x="355" y="482">manual commits + retries</text><text class="label" x="355" y="502">DLQ after exhausted retries</text>
+  <path class="dash" d="M465 270 V375"/><text class="label" x="480" y="330">publish</text>
+
+  <rect class="worker" x="685" y="360" width="225" height="150"/>
+  <text class="head" x="710" y="397">OCR worker</text><text class="body" x="710" y="425">Tesseract + pdf2image</text><text class="body" x="710" y="446">field extraction</text><text class="body" x="710" y="467">idempotent stage</text><text class="label" x="710" y="492">metrics on :8000</text>
+  <rect class="worker" x="970" y="360" width="255" height="150"/>
+  <text class="head" x="995" y="397">Forensics worker</text><text class="body" x="995" y="425">OpenCV ELA + edges</text><text class="body" x="995" y="446">score + verdict</text><text class="body" x="995" y="467">heatmap + report</text><text class="label" x="995" y="492">metrics on :8000</text>
+  <path class="line" d="M600 430 H685"/><path class="line" d="M910 430 H970"/><text class="label" x="615" y="420">consume / publish</text>
+  <path class="dash" d="M797 360 V235"/><text class="label" x="812" y="305">read/write</text><path class="dash" d="M1097 360 V235"/><text class="label" x="1112" y="305">read/write</text>
+
+  <rect class="obs" x="55" y="590" width="1170" height="78"/>
+  <text class="head" x="80" y="622">Evidence boundary</text><text class="body" x="80" y="648">The full 10-container pipeline passed in CI (run 36613263530); the public Render gateway currently verifies auth, validation, graceful 503 degradation and metrics, but has no reachable MinIO/Kafka.</text>
+</svg>

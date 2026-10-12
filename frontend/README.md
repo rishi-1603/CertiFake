@@ -1,6 +1,14 @@
 # CertiFake frontend — what this actually is
 
-A single-page React client for the backend in `../backend`. One component file
+A single-page React client for the backend in `../backend`. The public build is
+at https://certi-fake.vercel.app and calls the configured
+`https://certifake.onrender.com` gateway. Day-10 verification confirmed the
+frontend and gateway health/auth paths; the gateway currently returns a
+controlled 503 for successful document storage because its Render environment
+has no reachable MinIO/Kafka, so the full processing workflow is evidenced by
+the CI Compose smoke run rather than claimed as live on Render.
+
+One component file
 (`src/App.jsx`, ~360 lines), no router, no state library, no TypeScript. That is
 a deliberate scope statement, not an unfinished scaffold: the backend is the
 product being demonstrated, and this exists so its endpoints can be exercised
