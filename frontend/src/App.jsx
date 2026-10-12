@@ -237,9 +237,9 @@ function App() {
       <main className="shell">
         <section className="hero card">
           <div>
-            <div className="badge">AI Certificate Intelligence</div>
+            <div className="badge">Certificate Forensics</div>
             <h1>CertiFake Pro</h1>
-            <p className="subtitle">Fast authenticity scoring, OCR extraction, and tamper detection.</p>
+            <p className="subtitle">Heuristic authenticity scoring, OCR extraction, and tamper signals.</p>
           </div>
           <div className="ring-wrap">
             <svg viewBox="0 0 120 120" className="ring">

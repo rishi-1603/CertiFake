@@ -23,6 +23,27 @@ backend have been deleted; their forensic logic was already just calling
 into `backend/app/forensics.py` and `backend/app/ocr.py`, which are shared
 and unaffected.
 
+### Current deployment verification (Day 10)
+
+Two public deployment surfaces exist and are intentionally documented
+separately:
+
+- **React frontend (Vercel):** https://certi-fake.vercel.app — HTTP 200; the
+  deployed bundle is configured to call `https://certifake.onrender.com`.
+- **FastAPI gateway (Render):** https://certifake.onrender.com — `/health`,
+  `/docs`, `/openapi.json` and `/metrics` returned HTTP 200 during the Day-10
+  check. Auth registration/login and `/auth/me` also passed live.
+
+The Render service is currently an **API-only degraded deployment**: it does
+not have reachable MinIO/Kafka infrastructure configured. A real certificate
+upload therefore returned the designed `503 File storage is temporarily
+unavailable` response, while a renamed-text upload was rejected with HTTP 400
+by magic-byte validation and an unauthenticated upload returned HTTP 401.
+The full successful upload → OCR → forensics → report workflow is verified by
+the CI Docker Compose smoke run recorded below, not claimed as a successful
+workflow on the current public Render service. Kubernetes remains schema-
+validated only and has never been applied to a live cluster.
+
 ### What is implemented and verified today
 
 - **Authentication (restored):** `/auth/register`, `/auth/login`,
@@ -382,9 +403,12 @@ this repo is fixed here; the fixes are listed with what made each one matter.
    two siblings, this check is **unconditional** rather than production-only, and
    the asymmetry is deliberate: both siblings are deployed or intended to be
    (DevTrack is live on Render), where a rule that fails unconditionally could
-   take a running service down over a development key. CertiFake is not deployed
-   anywhere — no cluster has ever run these manifests — so the stricter rule
-   costs nothing today and is the right one the day it is. The CI compose-smoke
+   take a running service down over a development key. The public Render
+   gateway exists, but no cluster has ever run these Kubernetes manifests and
+   the gateway is not the full Postgres/Kafka/MinIO deployment described by the
+   compose stack. The stricter rule costs nothing today and is the right one
+   for a cluster when one is provisioned. The public Render gateway exists, but it is not the full
+   Postgres/Kafka/MinIO deployment described by the compose stack. The CI compose-smoke
    secret was 31 characters and is now 37.
 5. **`DATABASE_URL` is now required.** It used to fall back to
    `sqlite:///./certifake.db`, so a container started without it ran silently
@@ -639,6 +663,10 @@ worker-forensics (app/workers/forensics.py)
 Client polls GET /status/{analysis_id} (Bearer token, ownership-checked)
 Client downloads GET /report/{analysis_id} (PDF) and GET /heatmap/{analysis_id} (PNG)
 ```
+
+**Diagram:** [verified architecture SVG](docs/architecture.svg) · **UI captures:**
+[live Vercel screenshot](docs/screenshots/certifake-live-frontend.png) ·
+[current source screenshot](docs/screenshots/certifake-local-frontend.png)
 
 Every service in `docker-compose.yml` (`api-gateway`, `worker-ocr`,
 `worker-forensics`) builds from the same `backend/Dockerfile` and runs a
