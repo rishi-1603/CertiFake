@@ -1,7 +1,7 @@
 # CertiFake — Days 8–10 final QA report
 
 **Verification date:** 2026-10-12 (Asia/Calcutta / UTC evidence timestamps)  
-**Verified main commit:** `220e28a1`  
+**Verified main commit:** `92aead03`  
 **Repository:** https://github.com/rishi-1603/CertiFake
 
 This report separates the public API deployment from the full distributed stack.
@@ -30,7 +30,7 @@ MinIO/Kafka, so a successful live document-processing workflow is not claimed.
 | Live successful upload | **UNVERIFIED / deployment PARTIAL** | A valid rendered certificate returned the designed 503 storage-unavailable response because MinIO/Kafka are not reachable in the Render environment |
 | Critical automated tests | **PASS** | **89 passed**, 78% production coverage in local run; CI test job passed |
 | Security/dependencies | **PASS** | Backend `pip-audit`: `No known vulnerabilities found`; frontend `npm audit --omit=dev`: 0 vulnerabilities; tracked-file secret scan clean |
-| CI/CD | **PASS** | Main run [38230228321](https://github.com/rishi-1603/CertiFake/actions/runs/38230228321): test, frontend-build, config-validation, Docker build, Compose smoke, and Docker publish all passed |
+| CI/CD | **PASS** | Main run [38231641525](https://github.com/rishi-1603/CertiFake/actions/runs/38231641525): test, frontend-build, config-validation, Docker build, Compose smoke, and Docker publish all passed |
 | Kubernetes | **UNVERIFIED** | `kubeconform`/cross-file checks pass in CI, but no live cluster exists and manifests have never been applied |
 | README/architecture/screenshots | **PASS** | README now distinguishes live Render degradation from CI full-stack evidence; `docs/architecture.svg` and genuine UI captures are included |
 | Second verification | **PASS for controls / PARTIAL for live full pipeline** | CI rerun after documentation/frontend changes; live auth, validation, 503, and metrics rechecked |
