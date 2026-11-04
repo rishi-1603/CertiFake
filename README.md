@@ -93,3 +93,7 @@ The unit/API suite uses SQLite and fakes; it does not prove a distributed stack.
 No issuer verification, ground-truth fraud dataset, calibrated confidence, malware scanner, production threat assessment, login throttling, refresh tokens, reprocessing UI, migration framework or storage reconciliation. Import-time schema creation is not migrations. The upload read cap does not replace a reverse-proxy body limit or worker sandbox. Full PDF processing and resource isolation need further hardening. No p95/p99 or throughput figures have been measured.
 
 [Audit](docs/PROJECT_AUDIT.md) · [Seven-day roadmap](docs/UPGRADE_ROADMAP.md) · [Security](docs/SECURITY.md) · [Forensics](docs/FORENSIC_ENGINE.md) · [Operations](docs/OBSERVABILITY.md) · [Interview notes](docs/INTERVIEW_PREP.md)
+
+## Kubernetes manifests (unverified)
+
+`k8s/deployment.yaml` is an example, not a verified deployment. It assumes externally provisioned PostgreSQL, Kafka, Redis and MinIO services and an accessible container image. Before applying it, provision a Kubernetes Secret named `certifake-secrets` with keys `database-url`, `secret-key`, `minio-access-key` and `minio-secret-key` through your cluster's approved secret manager. Do not commit Secret values or pass real secrets in shell history. The manifests, infrastructure connectivity, upgrades and failover have not been tested on a cluster; their probes are not full dependency-readiness checks.
