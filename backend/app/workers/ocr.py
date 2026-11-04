@@ -1,23 +1,15 @@
-"""OCR worker: consumes `certificate_uploaded`, extracts text, publishes `ocr_completed`.
+"""OCR consumer and transactional outbox dispatcher.
 
-Day 4 rework: retry/backoff, dead-lettering, manual offset commit and
-duplicate-event idempotency now live in app/consumer.py (shared with the
-forensics worker) instead of being re-implemented here. Before that this
-file had its own `while True: poll()` loop in which a single exception
-permanently marked the analysis failed -- no retry, no DLQ -- and it never
-committed offsets, which under confluent_kafka's default auto-commit meant
-messages could be silently lost on a crash.
-
-What this file keeps is the part that is genuinely OCR-specific: the
-download/extract/persist/publish sequence, and the idempotency rule that
-decides whether this stage already ran.
+The OCR row update and downstream event are one database transaction. The
+background dispatcher also publishes the upload and completion outbox events.
+Redelivery may duplicate broker messages; stage processing is guarded in DB.
 """
 import os
 import tempfile
 
 from app.consumer import DUPLICATE, HANDLED, consume_loop
-from app.kafka_utils import get_kafka_consumer, get_kafka_producer, produce_event
-from app.models import CertificateAnalysis, SessionLocal
+from app.kafka_utils import get_kafka_consumer, get_kafka_producer
+from app.models import CertificateAnalysis, OutboxEvent, SessionLocal
 from app.ocr import extract_fields, run_ocr
 from app.s3_utils import download_file_bytes
 
@@ -46,8 +38,8 @@ def _mark_failed(analysis_id: str, error: Exception | None) -> None:
         return
     db = SessionLocal()
     try:
-        analysis = db.query(CertificateAnalysis).filter(CertificateAnalysis.id == analysis_id).first()
-        if analysis is not None:
+        analysis = db.query(CertificateAnalysis).filter(CertificateAnalysis.id == analysis_id).with_for_update().first()
+        if analysis is not None and analysis.status != "completed":
             analysis.status = "failed"
             db.commit()
     finally:
@@ -69,19 +61,16 @@ def process_ocr(event: dict) -> str:
     db = SessionLocal()
     tmp_path = None
     try:
-        analysis = db.query(CertificateAnalysis).filter(CertificateAnalysis.id == analysis_id).first()
+        analysis = db.query(CertificateAnalysis).filter(CertificateAnalysis.id == analysis_id).with_for_update().first()
         if analysis is None:
             # Nothing to update and nothing to retry -- the row is gone (or
             # never existed). Treat as handled so the offset commits; raising
             # here would only dead-letter a message that can never succeed.
             return HANDLED
 
-        # Idempotency: manual commit gives at-least-once delivery, so this
-        # same event can legitimately arrive twice (a crash after publishing
-        # ocr_completed but before committing). If OCR text is already
-        # stored, this stage ran -- skip it rather than re-doing expensive
-        # OCR and re-publishing a duplicate downstream event.
-        if analysis.ocr_text:
+        # DB row lock serializes overlapping deliveries on PostgreSQL.
+        # Non-None text means this stage and its outbox insert committed.
+        if analysis.ocr_text is not None:
             return DUPLICATE
 
         file_bytes = download_file_bytes(file_key)
@@ -96,23 +85,26 @@ def process_ocr(event: dict) -> str:
 
         analysis.ocr_text = ocr_text[:4000]
         analysis.extracted_fields = extracted
+        db.add(OutboxEvent(analysis_id=analysis_id, topic="ocr_completed", payload={
+            "analysis_id": analysis_id, "file_key": file_key,
+            "content_type": content_type,
+        }))
         db.commit()
     finally:
         if tmp_path is not None and os.path.exists(tmp_path):
             os.remove(tmp_path)
         db.close()
 
-    # Published after the DB commit so a redelivery is detected by the
-    # idempotency check above rather than producing a second ocr_completed.
-    produce_event(
-        producer, "ocr_completed", analysis_id,
-        {"analysis_id": analysis_id, "file_key": file_key, "content_type": content_type, "ocr_text": ocr_text},
-    )
     print(f"[OCR] Completed {analysis_id}")
     return HANDLED
 
 
 def main() -> None:
+    # A separate producer/DB session publishes the transactionally queued handoff.
+    from threading import Thread
+
+    from app.outbox import dispatch_loop
+    Thread(target=dispatch_loop, name="ocr-outbox", daemon=True).start()
     consume_loop(
         consumer, producer, process_ocr,
         source_topic=SOURCE_TOPIC,

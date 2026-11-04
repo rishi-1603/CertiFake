@@ -1,7 +1,18 @@
 import os
+import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Column, DateTime, Float, ForeignKey, String, create_engine, text
+from sqlalchemy import (
+    JSON,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    String,
+    UniqueConstraint,
+    create_engine,
+    text,
+)
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 
@@ -81,6 +92,19 @@ class CertificateAnalysis(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     owner = relationship("User", back_populates="analyses")
+
+
+class OutboxEvent(Base):
+    """Durable OCR->forensics handoff, created in the OCR transaction."""
+    __tablename__ = "outbox_events"
+    __table_args__ = (UniqueConstraint("analysis_id", "topic", name="uq_outbox_analysis_topic"),)
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex)
+    analysis_id = Column(String, ForeignKey("analyses.id"), nullable=False, index=True)
+    topic = Column(String, nullable=False)
+    payload = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    sent_at = Column(DateTime, nullable=True, index=True)
 
 
 def init_db() -> None:

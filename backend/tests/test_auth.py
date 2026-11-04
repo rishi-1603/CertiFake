@@ -80,3 +80,14 @@ def test_report_requires_auth(client):
 def test_heatmap_requires_auth(client):
     resp = client.get("/heatmap/some-fake-id")
     assert resp.status_code == 401
+
+
+def test_token_without_expiration_is_rejected(client, auth_headers):
+    import jwt
+
+    from app.config import settings
+
+    headers = auth_headers(email='no-exp@example.com')
+    user_id = client.get('/auth/me', headers=headers).json()['id']
+    token = jwt.encode({'sub': user_id, 'iat': 1}, settings.secret_key, algorithm=settings.jwt_algorithm)
+    assert client.get('/auth/me', headers={'Authorization': 'Bearer ' + token}).status_code == 401

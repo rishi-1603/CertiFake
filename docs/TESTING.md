@@ -1,0 +1,7 @@
+# Testing
+
+Run `cd backend && python -m pytest -q --cov=app --cov-report=term-missing` and `ruff check app tests` (CI pins Ruff). Unit/API tests use SQLite, fakeredis and mocked boundaries; some tests intentionally call unavailable real endpoints. They are not a replacement for PostgreSQL or Kafka integration tests. `npm --prefix frontend ci`, `npm --prefix frontend run lint -- --deny-warnings` and `npm --prefix frontend run build` verify frontend compilation, not browser accessibility.
+
+With Docker Compose running, `docker compose exec -T api-gateway python - < scripts/compose_smoke_test.py` exercises actual auth, synthetic PNG upload, OCR four-field extraction, completion, owner artifacts and a different user's 404 checks. The local native-process execution on 4 Nov 2026 used real Postgres, Redis, Kafka, MinIO and Tesseract; the sandbox had no Docker daemon. The real broker-stop test observed pending DB outbox before restart and eventual completion afterward. It is one failure-injection scenario, not full coverage of crash timing, partitions, replicas, migrations or S3 transaction failures. Final numbers are in the release report.
+
+`python scripts/evaluate_ocr.py` runs a tiny synthetic OCR exercise; benchmark limitations are in OCR_PIPELINE.md. Current CI builds/lints/tests and has a Compose smoke job; the latest commit's actual CI result must be checked after push. No formal security certification or full-stack load test is implied.

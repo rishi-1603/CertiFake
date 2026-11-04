@@ -1,44 +1,11 @@
-"""CertiFake Distributed API Gateway -- the single, canonical backend.
+"""FastAPI gateway for authenticated certificate analysis.
 
-This is the ONE backend for CertiFake, replacing three previously
-inconsistent entrypoints that existed side by side in this repository:
-  1. `app/main.py` (a standalone synchronous demo with local JWT auth and
-     inline forensics, storing users in a flat JSON file) -- now removed.
-  2. This file, `app/api.py`, previously had NO authentication at all
-     (commit "Remove authentication entirely for public access").
-  3. `streamlit_app.py` at the repo root, a third parallel reimplementation
-     of the forensic logic -- now removed; forensic logic lives in
-     app/forensics.py, app/ocr.py, shared by this API and both workers.
-
-Architecture (matches docker-compose.yml and k8s/deployment.yaml, which
-already targeted `app.api:app` before this consolidation):
-
-    Client
-      |
-      v
-    POST /analyze (JWT required)  -----> S3/MinIO (raw file)
-      |                                     |
-      v                                     v
-    Postgres (analysis row, status=analyzing)
-      |
-      v
-    Kafka: "certificate_uploaded"
-      |
-      v
-    worker-ocr  --(Kafka: ocr_completed)--> worker-forensics
-      |                                          |
-      v                                          v
-    Postgres (ocr_text)                Postgres (score, verdict, status=completed)
-
-    Client polls GET /status/{id} (JWT required, ownership-checked)
-
-Security model: every analysis row is scoped to `owner_id` (the
-authenticated user who uploaded it). GET /status/{id}, GET /report/{id}, and
-GET /heatmap/{id} all verify the requester owns the analysis before
-returning anything -- this did not exist even before the auth-removal
-commit (the pre-removal code only checked "is there a valid token", not
-"does this token's user own this specific analysis").
+Uploads write the object to S3, then commit an analysis and outbox event in
+one database transaction. The OCR worker also runs the outbox dispatcher;
+202 means queued durably in PostgreSQL, not completed or broker-delivered.
+See docs/DISTRIBUTED_PROCESSING.md for cross-service failure windows.
 """
+import io
 import os
 import time
 import uuid
@@ -48,12 +15,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.auth import _get_db, login, register, require_user
 from app.config import settings
-from app.kafka_utils import get_kafka_producer, produce_event
 from app.metrics import analyze_request_duration_seconds, analyze_requests_total
-from app.models import CertificateAnalysis, User
+from app.models import CertificateAnalysis, OutboxEvent, User
 from app.rate_limit import check_rate_limit
 from app.report import create_report
 from app.s3_utils import (
@@ -89,7 +56,6 @@ app.add_middleware(
 # when all three boot against one fresh database. A second bare create_all()
 # here used to do exactly that -- it duplicated the work and bypassed the lock.
 # See app/models.py:init_db for the full reasoning.
-producer = get_kafka_producer()
 
 @app.get("/health")
 def health():
@@ -179,28 +145,40 @@ async def analyze(
     db: Session = Depends(_get_db),
     _rate_limited: None = Depends(_rate_limit_analyze),
 ):
-    # Only the synchronous part of this handler is timed (upload validation,
-    # S3 write, DB insert, Kafka publish) -- OCR/forensics happen later in
+    # Only the request portion is timed (upload validation,
+    # S3 write and database/outbox commit) -- OCR/forensics happen later in
     # separate worker processes and are timed/counted there instead (see
     # app/workers/ocr.py, app/workers/forensics.py, app/metrics.py).
     start = time.monotonic()
     try:
-        data = await file.read()
+        # Multipart parsing may already spool the body; a proxy-level request
+        # cap is still needed. This bounds how much this handler reads in memory.
+        limit = settings.max_upload_mb * 1024 * 1024
+        chunks = []
+        size = 0
+        while True:
+            chunk = await file.read(min(1024 * 1024, limit + 1 - size))
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > limit:
+                raise HTTPException(status_code=413, detail=f"File too large (max {settings.max_upload_mb}MB).")
+            chunks.append(chunk)
+        data = b"".join(chunks)
         # Real content validation (magic-byte sniffing, size limit, filename/path
         # sanitization) rather than trusting the client-supplied Content-Type
         # header, which is trivially spoofable. See app/security.py.
         content_type = validate_upload(filename=file.filename, data=data, declared_content_type=file.content_type)
 
         analysis_id = uuid.uuid4().hex
-        safe_filename = os.path.basename(file.filename or "upload")
-        file_key = f"{user.id}/{analysis_id}/{safe_filename}"
+        safe_filename = os.path.basename((file.filename or "upload").replace("\\", "/"))
+        safe_filename = "".join(c for c in safe_filename if c.isprintable())[:200] or "upload"
+        extension = os.path.splitext(safe_filename)[1].lower()
+        file_key = f"{user.id}/{analysis_id}/original{extension}"
         try:
-            upload_file_bytes(file_key, data)
+            await run_in_threadpool(upload_file_bytes, file_key, data)
         except StorageUnavailableError:
-            # Fails BEFORE any DB row is created, so there is no orphaned
-            # "analyzing" record left behind when storage is down -- unlike the
-            # Kafka-publish-failure path below, which happens after the DB
-            # commit and therefore explicitly marks the row "failed" instead.
+            # No analysis or outbox row exists when the storage write fails.
             analyze_requests_total.labels(outcome="storage_unavailable").inc()
             raise HTTPException(
                 status_code=503, detail="File storage is temporarily unavailable. Please try again shortly."
@@ -213,32 +191,15 @@ async def analyze(
             content_type=content_type,
             status="analyzing",
         )
+        event = {"analysis_id": analysis_id, "file_key": file_key, "content_type": content_type}
+        # Metadata and the publication intent commit atomically. Object storage
+        # is separate: an upload may remain orphaned if this transaction fails.
         db.add(new_analysis)
+        db.add(OutboxEvent(analysis_id=analysis_id, topic="certificate_uploaded", payload=event))
         db.commit()
 
-        event = {"analysis_id": analysis_id, "file_key": file_key, "content_type": content_type}
-        delivered = produce_event(producer, "certificate_uploaded", analysis_id, event)
-
-        if not delivered:
-            # The file is safely in S3 and the DB row exists, but no worker will
-            # ever pick it up without the Kafka event. Recording this explicitly
-            # (rather than silently returning "analyzing" forever) means a
-            # client polling GET /status/{id} sees "failed" with a clear reason
-            # instead of waiting indefinitely for a completion that will never
-            # come -- this is the failure-mode behavior this project's own
-            # design docs call for (queue/broker outage handling), not just
-            # "the API works when everything is working."
-            new_analysis.status = "failed"
-            db.add(new_analysis)
-            db.commit()
-            analyze_requests_total.labels(outcome="broker_unavailable").inc()
-            raise HTTPException(
-                status_code=503,
-                detail="Certificate was stored but could not be queued for analysis (message broker unavailable). Please try again shortly.",
-            )
-
         analyze_requests_total.labels(outcome="accepted").inc()
-        return {"analysis_id": analysis_id, "status": "analyzing", "message": "Certificate queued for distributed analysis"}
+        return {"analysis_id": analysis_id, "status": "analyzing", "message": "Certificate stored; processing event queued for delivery"}
     finally:
         analyze_request_duration_seconds.observe(time.monotonic() - start)
 
@@ -249,12 +210,12 @@ def get_status(analysis_id: str, user: User = Depends(require_user), db: Session
     return {
         "analysis_id": analysis.id,
         "status": analysis.status,
-        "authenticity_score": analysis.authenticity_score,
-        "verdict": analysis.verdict,
+        "authenticity_score": None,
+        "verdict": "Inconclusive" if analysis.status == "completed" else None,
         "ocr_text": analysis.ocr_text,
         "extracted_fields": analysis.extracted_fields,
         "suspicious_signals": analysis.suspicious_signals,
-        "confidence": analysis.confidence,
+        "confidence": None,
     }
 
 
@@ -277,28 +238,16 @@ def get_report(analysis_id: str, user: User = Depends(require_user), db: Session
     if analysis.status != "completed":
         raise HTTPException(status_code=404, detail="Report not ready or found")
 
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-        report_path = tmp.name
-
-    create_report(
-        report_path,
-        {
-            "file_name": analysis.filename,
-            "user": user.email,
-            "authenticity_score": analysis.authenticity_score or 0,
-            "verdict": analysis.verdict or "Unknown",
-            "signals": ", ".join(analysis.suspicious_signals or []) or "None",
-            "ocr_preview": (analysis.ocr_text or "")[:1500],
-            "fields": analysis.extracted_fields or {},
-            "python_compat": "3.11",
-        },
-    )
-
-    with open(report_path, "rb") as f:
-        pdf_bytes = f.read()
-    os.remove(report_path)
+    buffer = io.BytesIO()
+    create_report(buffer, {
+        "file_name": analysis.filename,
+        "user": user.email,
+        "verdict": "Inconclusive",
+        "signals": ", ".join(analysis.suspicious_signals or []) or "None detected",
+        "ocr_preview": (analysis.ocr_text or "")[:1500],
+        "fields": analysis.extracted_fields or {},
+    })
+    pdf_bytes = buffer.getvalue()
 
     return Response(
         content=pdf_bytes,

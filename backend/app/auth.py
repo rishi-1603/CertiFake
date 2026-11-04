@@ -74,6 +74,8 @@ def register(db: Session, email: str, password: str) -> tuple[User, str]:
         raise HTTPException(status_code=400, detail="Email and password are required.")
     if len(password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    if len(password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="Password must be at most 72 UTF-8 bytes for bcrypt.")
 
     existing = db.query(User).filter(User.email == email).first()
     if existing:
@@ -89,7 +91,7 @@ def register(db: Session, email: str, password: str) -> tuple[User, str]:
 def login(db: Session, email: str, password: str) -> tuple[User, str]:
     email = email.strip().lower()
     user = db.query(User).filter(User.email == email).first()
-    if user is None or not verify_password(password, user.password_hash):
+    if len(password.encode("utf-8")) > 72 or user is None or not verify_password(password, user.password_hash):
         # Deliberately identical error for "no such user" and "wrong password"
         # so the API doesn't leak which emails are registered (user
         # enumeration is an OWASP-listed authentication weakness).
@@ -104,7 +106,8 @@ def require_user(
     if credentials is None:
         raise HTTPException(status_code=401, detail="Missing bearer token.")
     try:
-        payload = jwt.decode(credentials.credentials, settings.secret_key, algorithms=[settings.jwt_algorithm])
+        payload = jwt.decode(credentials.credentials, settings.secret_key, algorithms=[settings.jwt_algorithm],
+                             options={"require": ["exp", "iat", "sub"]})
     except PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token.")
 

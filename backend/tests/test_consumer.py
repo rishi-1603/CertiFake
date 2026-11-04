@@ -39,7 +39,8 @@ class FakeConsumer:
     def poll(self, timeout=1.0):
         return self._messages.pop(0) if self._messages else None
 
-    def commit(self, msg):
+    def commit(self, msg, asynchronous=False):
+        assert asynchronous is False
         self.committed.append(msg)
 
 
@@ -195,12 +196,13 @@ def test_malformed_payload_dead_letters_immediately_without_burning_retries(fake
     # Retrying an undecodable payload can never succeed.
     assert attempts == []
     assert consumer.committed == [msg]
-    assert "unparseable_payload" in fake_dlq["calls"][0]["event"]
+    assert "unparseable_sha256" in fake_dlq["calls"][0]["event"]
+    assert "unparseable_payload" not in fake_dlq["calls"][0]["event"]
 
 
 def test_broken_dead_letter_callback_still_dead_letters(fake_dlq):
-    """A bug in the worker's terminal callback must not prevent the message
-    from reaching the DLQ -- that would turn one failure into data loss."""
+    """A failed terminal-state write preserves the uncommitted offset even if
+    DLQ publication succeeded; retry may duplicate the DLQ entry."""
     def bad_callback(event, error, attempts):
         raise ValueError("callback is broken")
 
@@ -210,7 +212,8 @@ def test_broken_dead_letter_callback_still_dead_letters(fake_dlq):
         source_topic="certificate_uploaded", worker_name="test",
         max_attempts=1, sleep=lambda s: None, on_dead_letter=bad_callback,
     )
-    assert outcome == "dead_lettered"
+    assert outcome == "dead_letter_failed"
+    assert consumer.committed == []
     assert len(fake_dlq["calls"]) == 1
 
 
@@ -287,7 +290,8 @@ def test_dlq_envelope_contents_and_topic_name(monkeypatch):
     assert key == "xyz"
     assert envelope["source_topic"] == "certificate_uploaded"
     assert envelope["original_event"] == {"analysis_id": "xyz", "file_key": "u/xyz/c.png"}
-    assert envelope["error"] == "bad pixels"
+    assert "Processing failed" in envelope["error"]
+    assert "bad pixels" not in envelope["error"]
     assert envelope["error_type"] == "ValueError"
     assert envelope["attempts"] == 3
     assert envelope["dead_lettered_at"]
@@ -312,3 +316,30 @@ def test_consumer_is_configured_for_manual_commit(monkeypatch):
     assert captured["enable.auto.commit"] is False
     assert captured["group.id"] == "test-group"
     assert captured["topics"] == ["certificate_uploaded"]
+
+
+def test_loop_stops_before_later_offset_can_skip_failed_dlq(fake_dlq):
+    fake_dlq['state']['ok'] = False
+    bad = _event_msg('first')
+    later = _event_msg('later')
+    consumer = FakeConsumer([bad, later])
+    seen = []
+
+    def fail_first(event):
+        seen.append(event['analysis_id'])
+        raise RuntimeError('injected failure')
+
+    with pytest.raises(RuntimeError, match='uncommitted'):
+        consume_loop(consumer, object(), fail_first,
+                     source_topic='certificate_uploaded', worker_name='test',
+                     max_attempts=1, sleep=lambda _: None)
+    assert seen == ['first'] and consumer.committed == []
+    assert consumer._messages == [later]
+
+
+def test_non_object_json_is_dead_lettered_not_sent_to_handler(fake_dlq):
+    consumer = FakeConsumer([])
+    outcome = handle_one_message(consumer, object(), lambda _: pytest.fail('must not run'),
+        FakeMessage(b'[]'), source_topic='certificate_uploaded', worker_name='test', sleep=lambda _: None)
+    assert outcome == 'malformed_dead_lettered'
+    assert len(consumer.committed) == 1

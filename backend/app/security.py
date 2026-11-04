@@ -19,10 +19,13 @@ run a malware scan (e.g. ClamAV) on the bytes before they reach storage --
 that is explicitly listed as unimplemented in the README rather than
 pretended to be covered here.
 """
+import io
 import os
+import warnings
 
 import magic
 from fastapi import HTTPException
+from PIL import Image, UnidentifiedImageError
 
 from app.config import settings
 
@@ -67,10 +70,10 @@ def validate_upload(filename: str | None, data: bytes, declared_content_type: st
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Unsupported file extension.")
 
-    if declared_content_type == "application/pdf" and ext != ".pdf":
-        raise HTTPException(status_code=400, detail="File extension does not match declared PDF content type.")
-    if declared_content_type.startswith("image/") and ext == ".pdf":
-        raise HTTPException(status_code=400, detail="File extension does not match declared image content type.")
+    extensions = {"image/jpeg": {".jpg", ".jpeg"}, "image/png": {".png"},
+                  "image/webp": {".webp"}, "application/pdf": {".pdf"}}
+    if ext not in extensions[declared_content_type]:
+        raise HTTPException(status_code=400, detail="File extension does not match declared type.")
 
     try:
         sniffed = magic.from_buffer(data, mime=True)
@@ -83,4 +86,15 @@ def validate_upload(filename: str | None, data: bytes, declared_content_type: st
             detail=f"File contents do not match the declared type (detected: {sniffed}).",
         )
 
+    if declared_content_type.startswith("image/"):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(io.BytesIO(data)) as image:
+                    if image.width * image.height > 20_000_000:
+                        raise HTTPException(status_code=413, detail="Image exceeds 20 million pixels.")
+                    image.verify()
+        except (UnidentifiedImageError, OSError, SyntaxError, ValueError,
+                Image.DecompressionBombWarning, Image.DecompressionBombError):
+            raise HTTPException(status_code=400, detail="Image is corrupt or cannot be safely decoded.") from None
     return declared_content_type

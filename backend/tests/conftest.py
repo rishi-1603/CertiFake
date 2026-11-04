@@ -6,13 +6,10 @@ Design notes:
     stack, and never touch real developer data. Set DATABASE_URL *before*
     importing anything under app/, since app/models.py reads it at
     import time.
-  - Kafka and S3/MinIO calls are monkeypatched to fast in-memory fakes for
-    the majority of tests (which are testing endpoint/auth/ownership
-    logic, not infrastructure). Two dedicated tests
-    (test_failure_modes.py) intentionally do NOT patch these, to prove the
-    503-on-outage behavior added during Day 1 consolidation actually
-    works against the real (unreachable, in this sandbox) client code
-    paths.
+  - Storage calls are mocked in endpoint tests. Outbox/consumer unit tests
+    use fake publication; one failure test exercises the real storage client
+    against an unreachable endpoint. These tests do not establish real Kafka
+    or PostgreSQL behavior.
 """
 import os
 import tempfile
@@ -59,18 +56,6 @@ def _fake_redis(monkeypatch):
     yield fake_client
 
 
-@pytest.fixture
-def fake_kafka(monkeypatch):
-    """Patch app.api.produce_event so tests default to a healthy broker
-    (returns True == delivered) without any network call."""
-    calls = []
-
-    def _fake_produce_event(producer, topic, key, value_dict):
-        calls.append((topic, key, value_dict))
-        return True
-
-    monkeypatch.setattr(api_module, "produce_event", _fake_produce_event)
-    return calls
 
 
 @pytest.fixture
@@ -96,15 +81,19 @@ def fake_storage(monkeypatch, tmp_path):
 
 
 @pytest.fixture
-def client(fake_kafka, fake_storage):
+def client(fake_storage):
     return TestClient(api_module.app)
 
 
-TEST_PNG_BYTES = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xcf\xc0\x00"
-    b"\x00\x03\x01\x01\x00\x18\xdd\x8d\xb0\x00\x00\x00\x00IEND\xaeB`\x82"
-)
+# Generate a valid image; the old magic-only bytes had a corrupt IDAT checksum.
+from io import BytesIO  # noqa: E402
+
+from PIL import Image  # noqa: E402
+
+_png = BytesIO()
+Image.new("RGB", (16, 16), "white").save(_png, format="PNG")
+TEST_PNG_BYTES = _png.getvalue()
+
 
 
 @pytest.fixture

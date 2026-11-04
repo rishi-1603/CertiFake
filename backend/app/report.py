@@ -38,10 +38,9 @@ def create_report(path: str, data: dict):
     items = [
         ("File Name", data.get("file_name", "-")),
         ("User", data.get("user", "-")),
-        ("Score", str(data.get("authenticity_score", "-"))),
         ("Verdict", data.get("verdict", "-")),
         ("Signals", data.get("signals", "-")),
-        ("Python", data.get("python_compat", "-")),
+        ("Limit", "Signals do not prove authenticity or fraud."),
     ]
 
     for k, v in items:
@@ -50,6 +49,15 @@ def create_report(path: str, data: dict):
         c.setFillColor(HexColor("#eaf2ff"))
         c.drawString(130, y, str(v))
         y -= 24
+
+    fields = data.get("fields") or {}
+    for key in ("name", "certificate_no", "date", "institution"):
+        value = str(fields.get(key, "Not extracted"))[:100]
+        c.setFillColor(HexColor("#9fb2cc"))
+        c.drawString(42, y, f"{key}:")
+        c.setFillColor(HexColor("#eaf2ff"))
+        c.drawString(155, y, value)
+        y -= 18
 
     c.setFillColor(HexColor("#9fb2cc"))
     c.drawString(42, y - 4, "OCR Preview:")

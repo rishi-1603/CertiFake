@@ -53,6 +53,7 @@ def test_ocr_stage_skips_when_text_already_extracted(monkeypatch):
     monkeypatch.setattr(
         ocr_worker, "produce_event",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("duplicate ocr_completed published")),
+        raising=False,
     )
 
     assert ocr_worker.process_ocr(_event("ocr-dup")) == DUPLICATE
@@ -72,6 +73,7 @@ def test_forensics_stage_skips_when_analysis_already_completed(monkeypatch):
     monkeypatch.setattr(
         forensics_worker, "produce_event",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("duplicate analysis_completed published")),
+        raising=False,
     )
 
     assert forensics_worker.process_forensics(_event("for-dup")) == DUPLICATE

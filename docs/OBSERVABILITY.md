@@ -1,0 +1,5 @@
+# Operations and troubleshooting
+
+`GET /health` is process liveness, not readiness for DB/Kafka/MinIO. `GET /metrics` exposes Prometheus metrics; worker processes expose metrics on port 8000 inside their separate containers. `docker compose logs -f api-gateway worker-ocr worker-forensics` helps investigate; logs include analysis IDs and errors and must be access-controlled.
+
+For an analysis stuck in `analyzing`, inspect `outbox_events` for that analysis, pending `sent_at`, OCR worker and Kafka broker status, then consumer and DLQ topics. Pending events are retried by the OCR worker's dispatcher, so restarting only the API will not drain them. A terminal `failed` status can accompany a DLQ entry; there is no built-in replay endpoint. Do not manually replay old events without understanding the `(analysis_id, topic)` uniqueness/idempotency rule and state. Check S3 separately for missing/orphaned objects. These instructions are diagnostic; they do not replace a verified recovery runbook, alerting or structured tracing.

@@ -1,0 +1,7 @@
+# OCR pipeline
+
+Images are converted to grayscale/autocontrast and capped at 1200×1200 before Tesseract (`--oem 3 --psm 6`, 30-second timeout per pass). PDFs render **only page 1** at 150 DPI with a 30-second conversion timeout. If the first pass recognizes fewer than two supported labels, 90° and 270° rotations are tried and the candidate with most extracted labels (then longest text) is selected. This is a heuristic, not a calibrated orientation detector.
+
+The four explicitly labelled values are `name`, `certificate_no`, `date`, and `institution`. Regex extraction reads one line per label. Missing values are absent; there are no field confidence scores, source bounding boxes, issuer validation, universal-layout guarantees or evidence that extraction is correct merely because Tesseract returns text. PDF resource isolation remains incomplete.
+
+`python scripts/evaluate_ocr.py` creates three synthetic variants of the same generated template. On 4 November 2026 with Python 3.13.16, Pillow 13.0.0 and Tesseract 5.5.0, upright, 90° rotated and 3° rotated each returned 4/4 exact field values (12/12 field instances, zero missing and zero processing exceptions). Before the rotation fallback, the 90° sample returned 0/4 and the other two 4/4. This is a tiny controlled smoke exercise, not an independent, representative or real-world OCR accuracy estimate; versions and fonts may change outcomes.

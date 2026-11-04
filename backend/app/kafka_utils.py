@@ -18,7 +18,7 @@ PRODUCE_TIMEOUT_SECONDS = float(os.getenv("KAFKA_PRODUCE_TIMEOUT_SECONDS", "5"))
 
 
 def get_kafka_producer():
-    conf = {"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS}
+    conf = {"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS, "enable.idempotence": True}
     return Producer(conf)
 
 
@@ -105,7 +105,7 @@ def publish_to_dlq(producer, source_topic, original_event, error, attempts) -> b
     """Move a poison message to `<source_topic>.dlq`.
 
     Called only after all in-process retry attempts are exhausted. The
-    envelope keeps the ORIGINAL event intact plus why/when it failed, so a
+    envelope keeps the event plus a safe error category and timestamp, so a
     dead-lettered certificate can be inspected and replayed by hand rather
     than being reduced to a log line nobody will find.
 
@@ -117,7 +117,7 @@ def publish_to_dlq(producer, source_topic, original_event, error, attempts) -> b
     envelope = {
         "source_topic": source_topic,
         "original_event": original_event,
-        "error": str(error)[:2000],
+        "error": "Processing failed; inspect error_type and restricted worker logs.",
         "error_type": type(error).__name__,
         "attempts": attempts,
         "dead_lettered_at": datetime.now(timezone.utc).isoformat(),

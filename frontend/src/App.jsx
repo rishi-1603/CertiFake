@@ -173,17 +173,8 @@ function App() {
 
   const getPillClass = (verdict) => {
     if (!verdict) return 'idle'
-    if (verdict.includes('Genuine')) return 'good'
-    if (verdict.includes('Review')) return 'warn'
-    if (verdict.includes('Fake')) return 'bad'
+    if (verdict.includes('Inconclusive')) return 'warn'
     return 'idle'
-  }
-
-  const getRingColor = (score) => {
-    if (!score && score !== 0) return 'var(--accent)'
-    if (score >= 80) return 'var(--good)'
-    if (score >= 55) return 'var(--warn)'
-    return 'var(--bad)'
   }
 
   // Heatmap/report are protected endpoints now, so plain <img src> / <a
@@ -225,8 +216,6 @@ function App() {
     }
   }
 
-  const scoreValue = result?.authenticity_score ?? 0
-  const ringOffset = 326.7 - (326.7 * scoreValue / 100)
 
   return (
     <>
@@ -239,21 +228,10 @@ function App() {
           <div>
             <div className="badge">Certificate Forensics</div>
             <h1>CertiFake Pro</h1>
-            <p className="subtitle">Heuristic authenticity scoring, OCR extraction, and tamper signals.</p>
+            <p className="subtitle">OCR extraction and explainable image signals; not a certificate authenticity test.</p>
           </div>
           <div className="ring-wrap">
-            <svg viewBox="0 0 120 120" className="ring">
-              <circle cx="60" cy="60" r="52" className="ring-track"></circle>
-              <circle
-                cx="60" cy="60" r="52"
-                className="ring-fill"
-                style={{ strokeDashoffset: ringOffset, stroke: getRingColor(scoreValue) }}
-              ></circle>
-            </svg>
-            <div className="ring-text">
-              <span>{result ? Math.round(scoreValue) : '--'}</span>
-              <small>Authenticity</small>
-            </div>
+            <p>Analysis signals are inconclusive. Verify the certificate with its issuer.</p>
           </div>
         </section>
 
@@ -317,11 +295,11 @@ function App() {
               {result && (
                 <>
                   <div className="evidence-list">
-                    <div><span>Confidence</span><strong>{Math.round((result.confidence ?? 0) * 100)}%</strong></div>
+                    <div><span>Assessment</span><strong>Inconclusive — not proof of fraud or authenticity</strong></div>
                     <div>
                       <span>Suspicious Signals</span>
                       <strong style={{color: result.suspicious_signals?.length > 0 ? 'var(--warn)' : 'var(--good)'}}>
-                        {result.suspicious_signals?.length > 0 ? result.suspicious_signals.join(', ') : 'None Detected'}
+                        {result.suspicious_signals?.length > 0 ? result.suspicious_signals.join(', ') : 'No signals detected — not proof of authenticity'}
                       </strong>
                     </div>
                   </div>

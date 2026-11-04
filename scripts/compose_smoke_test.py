@@ -31,8 +31,7 @@ missing its language data -- this fails, and the unit tests (which fake Kafka
 and S3 at the Python-call boundary) would not have caught it.
 
 Deliberately tolerant of STARTUP timing but not of incorrectness: /analyze
-returns 503 while Kafka is still electing a broker (the app's documented
-fail-fast path), so that specific case is retried. A 4xx, a failed analysis, or
+may return 503 while object storage is starting. A broker outage leaves a durable pending outbox entry; 202 does not mean the workers finished. A 4xx, a failed analysis, or
 empty OCR output is a real failure and is not retried.
 
 Exit 0 = pipeline verified. Exit 1 = something is broken.
@@ -49,9 +48,8 @@ import urllib.request
 import uuid
 
 BASE = os.environ.get("SMOKE_BASE_URL", "http://127.0.0.1:8000")
-# Kafka needs longer than the other services: `docker compose up --wait` does
-# not gate on it (no healthcheck, deliberately -- see docker-compose.yml), so
-# the first /analyze calls can legitimately 503 until a broker is elected.
+# Allow storage startup retries and a separate processing deadline; queued
+# jobs can wait for Kafka even after the upload returns 202.
 ANALYZE_DEADLINE = float(os.environ.get("SMOKE_ANALYZE_DEADLINE", "240"))
 STATUS_DEADLINE = float(os.environ.get("SMOKE_STATUS_DEADLINE", "300"))
 
@@ -122,7 +120,7 @@ def make_certificate_png() -> bytes:
     extract and extract_fields() has the keywords its regexes anchor on.
 
     `load_default(size=...)` returns a scalable FreeType font (Pillow >= 10.1;
-    this project pins pillow==11.0.0) and needs no font files in the image.
+    this project pins pillow==13.0.0) and needs no font files in the image.
     The size matters: at the old ~11px bitmap default, tesseract read
     "Certificate ID:" as "Cortiticate 10:" and the field regex missed.
     """
@@ -205,7 +203,7 @@ def main() -> int:
             ok(f"POST /analyze -> 202 on attempt {attempt}, analysis_id={analysis_id[:12]}...")
             break
         if status == 503:
-            # Documented fail-fast while Kafka/MinIO are still coming up.
+            # Storage can still be starting; Kafka outages leave events in the outbox.
             elapsed = int(time.monotonic() - start)
             print(f"  ...   /analyze 503 (infra not ready), retrying [{elapsed}s elapsed]")
             time.sleep(5)
@@ -214,7 +212,7 @@ def main() -> int:
         return report()
     if analysis_id is None:
         bad(f"POST /analyze never returned 202 within {ANALYZE_DEADLINE}s "
-            f"({attempt} attempts, all 503) -- Kafka or MinIO never became usable")
+            f"({attempt} attempts, all 503) -- storage never became usable")
         return report()
 
     # ------------------------------------------------------------- status
@@ -257,28 +255,33 @@ def main() -> int:
             bad(f"OCR text does not contain 'CERTIFICATE' though it was rendered "
                 f"into the image; got: {ocr_text[:160]!r}")
 
-    score = final.get("authenticity_score")
-    if isinstance(score, (int, float)):
-        ok(f"authenticity_score = {score} (forensics worker produced a real score)")
+    if final.get("authenticity_score") is None and final.get("confidence") is None and final.get("verdict") == "Inconclusive":
+        ok("uncalibrated authenticity/confidence are not presented as evidence")
     else:
-        bad(f"authenticity_score missing or non-numeric: {score!r} -- the forensics "
-            f"stage did not write its result")
+        bad("result must be inconclusive with no authenticity or confidence score")
 
     fields = final.get("extracted_fields") or {}
-    # Verified locally against the real app.ocr.run_ocr + extract_fields: this
-    # image yields all four fields (name, certificate_no, date, institution).
-    # The bar here is deliberately ONE field, not four: OCR fidelity varies with
-    # the tesseract build and Pillow's font rasterisation, and this container
-    # pins pillow==11.0.0 while the check was developed against 12.3.0. One
-    # field still proves the extraction stage ran against real OCR output;
-    # demanding all four would risk a red build for a cosmetic difference.
-    if fields:
-        ok(f"extracted_fields populated ({len(fields)}/4): "
-           + ", ".join(f"{k}={v!r}" for k, v in sorted(fields.items())))
+    expected = {"name": "Jane A Doe", "certificate_no": "CF-2026-000123",
+                "date": "2026-09-28", "institution": "Global Institute of Technology"}
+    if fields == expected:
+        ok("four expected field values match the rendered synthetic document")
     else:
-        bad("extracted_fields is empty -- OCR produced text but none of the "
-            "keyword-anchored patterns in app/ocr.py matched, so the extraction "
-            f"stage is not working. OCR text was: {ocr_text[:200]!r}")
+        bad(f"OCR fields did not match the synthetic fixture: {fields!r}")
+
+    # A second authenticated account must not read another user's data.
+    other = f"smoke-other-{uuid.uuid4().hex[:10]}@example.com"
+    status, body = request("POST", "/auth/register", data=json.dumps({"email": other, "password": password}).encode(),
+                           headers={"Content-Type": "application/json"})
+    if status != 201:
+        bad("Could not register second user to check ownership")
+    else:
+        other_token = json.loads(body)["access_token"]
+        for endpoint in ("status", "heatmap", "report"):
+            code, _ = request("GET", f"/{endpoint}/{analysis_id}", headers={"Authorization": f"Bearer {other_token}"})
+            if code == 404:
+                ok(f"other user denied access to {endpoint}")
+            else:
+                bad(f"other user received {code} for {endpoint}; expected 404")
 
     # ------------------------------------------------------- artifacts
     for path, label in ((f"/heatmap/{analysis_id}", "heatmap PNG"),
@@ -289,7 +292,7 @@ def main() -> int:
         elif len(body) < 100:
             bad(f"GET {path} -> 200 but only {len(body)} bytes; {label} looks empty")
         else:
-            ok(f"GET {path} -> 200, {len(body)} bytes ({label} stored in MinIO and served back)")
+            ok(f"GET {path} -> 200, {len(body)} bytes ({label} served to owner)")
 
     return report()
 
@@ -303,7 +306,7 @@ def report() -> int:
             print(f"  - {f}")
         return 1
     print("\nSMOKE TEST PASSED: the full distributed pipeline works end to end "
-          "against real Postgres, Redis, Kafka, Zookeeper and MinIO containers.")
+          "against the services configured for this run. Container use must be verified separately.")
     return 0
 
 

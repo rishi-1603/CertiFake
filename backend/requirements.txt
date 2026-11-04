@@ -37,11 +37,11 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.2.1
 
 # Imaging, forensics, OCR and report generation.
-# pillow 11.0.0 -> 12.3.0 (finding S5): 19 advisories, directly reachable
+# pillow 12.3.0 -> 13.0.0: addresses advisories reported on 2026-11-04, directly reachable
 # because Image.open() runs on attacker-supplied files at forensics.py:37,43
 # and ocr.py:37. The forensics tests assert pixel-level behaviour, so they are
 # the check that this bump did not change the scoring.
-pillow==12.3.0
+pillow==13.0.0
 # Pinned to the newest numpy that publishes a cp311 wheel, because THIS repo's
 # interpreter is Python 3.11 in both places it matters: .github/workflows/ci.yml
 # and backend/Dockerfile (python:3.11-slim-trixie). numpy 2.5.x requires >=3.12,

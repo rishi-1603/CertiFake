@@ -1,10 +1,7 @@
-"""Forensics worker: consumes `ocr_completed`, scores the document, publishes `analysis_completed`.
+"""Forensics consumer: persist explainable signals and completion outbox event.
 
-Day 4 rework, mirroring app/workers/ocr.py: retry/backoff, dead-lettering,
-manual offset commit and duplicate-event idempotency are shared code in
-app/consumer.py rather than a second copy of a hand-rolled poll loop. This
-file keeps only what is forensics-specific -- download, score, heatmap
-upload, persist, publish -- plus its own idempotency rule.
+Heuristics cannot establish fraud or authenticity. Idempotency is protected by
+an analysis-row lock and a completed-state check on PostgreSQL.
 """
 import base64
 import os
@@ -12,8 +9,8 @@ import tempfile
 
 from app.consumer import DUPLICATE, HANDLED, consume_loop
 from app.forensics import heatmap_b64, score_document
-from app.kafka_utils import get_kafka_consumer, get_kafka_producer, produce_event
-from app.models import CertificateAnalysis, SessionLocal
+from app.kafka_utils import get_kafka_consumer, get_kafka_producer
+from app.models import CertificateAnalysis, OutboxEvent, SessionLocal
 from app.s3_utils import download_file_bytes, upload_file_bytes
 
 SOURCE_TOPIC = "ocr_completed"
@@ -34,8 +31,8 @@ def _mark_failed(analysis_id: str, error: Exception | None) -> None:
         return
     db = SessionLocal()
     try:
-        analysis = db.query(CertificateAnalysis).filter(CertificateAnalysis.id == analysis_id).first()
-        if analysis is not None:
+        analysis = db.query(CertificateAnalysis).filter(CertificateAnalysis.id == analysis_id).with_for_update().first()
+        if analysis is not None and analysis.status != "completed":
             analysis.status = "failed"
             db.commit()
     finally:
@@ -47,12 +44,11 @@ def process_forensics(event: dict) -> str:
     analysis_id = event["analysis_id"]
     file_key = event["file_key"]
     content_type = event["content_type"]
-    ocr_text = event.get("ocr_text", "")
 
     db = SessionLocal()
     tmp_path = None
     try:
-        analysis = db.query(CertificateAnalysis).filter(CertificateAnalysis.id == analysis_id).first()
+        analysis = db.query(CertificateAnalysis).filter(CertificateAnalysis.id == analysis_id).with_for_update().first()
         if analysis is None:
             # Row gone (or never existed): nothing to score and no retry can
             # create it. Commit rather than dead-letter an unfixable message.
@@ -63,6 +59,10 @@ def process_forensics(event: dict) -> str:
         # offset. "completed" means this stage already ran to completion.
         if analysis.status == "completed":
             return DUPLICATE
+        # Read the committed OCR result; the event does not need document text.
+        if analysis.ocr_text is None:
+            raise ValueError("OCR stage is not complete")
+        ocr_text = analysis.ocr_text
 
         file_bytes = download_file_bytes(file_key)
 
@@ -71,17 +71,12 @@ def process_forensics(event: dict) -> str:
             tmp.write(file_bytes)
             tmp_path = tmp.name
 
-        score, signals, gray = score_document(tmp_path, ocr_text, content_type)
+        _score, signals, gray = score_document(tmp_path, ocr_text, content_type)
         heat = heatmap_b64(gray)
 
-        if score >= 80:
-            verdict = "Likely Genuine"
-        elif score >= 55:
-            verdict = "Needs Review"
-        else:
-            verdict = "Likely Fake"
-
-        confidence = round(score / 100.0, 2)
+        # The heuristics are not calibrated on labelled authentic/fake data.
+        # They are signals, not a probability or a basis for a fraud verdict.
+        verdict = "Inconclusive"
 
         # Heatmap goes to the same "{user_id}/{analysis_id}/" prefix as the
         # original upload, derived from file_key's own directory rather than
@@ -92,18 +87,18 @@ def process_forensics(event: dict) -> str:
         if heat:
             upload_file_bytes(heatmap_key, base64.b64decode(heat))
 
-        analysis.authenticity_score = score
+        analysis.authenticity_score = None
         analysis.verdict = verdict
         analysis.suspicious_signals = signals
-        analysis.confidence = confidence
+        analysis.confidence = None
         analysis.status = "completed"
+        db.add(OutboxEvent(analysis_id=analysis_id, topic="analysis_completed", payload={"analysis_id": analysis_id}))
         db.commit()
     finally:
         if tmp_path is not None and os.path.exists(tmp_path):
             os.remove(tmp_path)
         db.close()
 
-    produce_event(producer, "analysis_completed", analysis_id, {"analysis_id": analysis_id})
     print(f"[Forensics] Completed {analysis_id}")
     return HANDLED
 

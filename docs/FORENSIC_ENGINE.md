@@ -1,0 +1,5 @@
+# Forensic signals and limitations
+
+For images, the implementation recompresses a resized image as JPEG at quality 90, calculates absolute RGB differences, converts to grayscale, and optionally colors a normalized difference map. The code flags mean difference above 15, low pixel dimensions, low edge density, weak OCR text and absent certificate-like keywords. These are heuristic features, not validated fraud classifiers. JPEG history, textures, clean edges, fonts, scans and image resizing can produce false positives and false negatives. The normalized heatmap only visualizes recompression differences; it does not localize proven tampering.
+
+PDFs are not pixel-forensically analyzed by this implementation; the fallback relies on OCR-related heuristics. Internal legacy heuristic weights are not calibrated or shown as authenticity/confidence. Results are `Inconclusive`, and a lack of detected signals is not proof of authenticity. Issuer verification and independent labelled evaluation are needed before stronger statements. Controlled image unit tests check reproducible implementation behavior; they do not establish detection accuracy.

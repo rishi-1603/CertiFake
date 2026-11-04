@@ -23,36 +23,45 @@ def _preprocess_image(img: Image.Image) -> Image.Image:
 
 def _ocr_image(img: Image.Image) -> str:
     config = "--oem 3 --psm 6"
-    return pytesseract.image_to_string(img, config=config)
+    return pytesseract.image_to_string(img, config=config, timeout=30)
 
 def run_ocr(path: str, content_type: str) -> str:
     p = Path(path)
-    if content_type == "application/pdf" and PDF_AVAILABLE:
-        # Reduced to 150 DPI and only first page for much faster processing
-        pages = convert_from_path(str(p), dpi=150)
-        if pages:
-            return _ocr_image(_preprocess_image(pages[0])).strip()
-        return ""
+    if content_type == "application/pdf":
+        if not PDF_AVAILABLE:
+            raise RuntimeError("PDF rendering is not available")
+        pages = convert_from_path(str(p), dpi=150, first_page=1, last_page=1, timeout=30)
+        if not pages:
+            raise ValueError("PDF first page could not be rendered")
+        img = pages[0]
     else:
-        img = Image.open(str(p))
-        # Resize image if it's too large to speed up OCR
-        img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
-        return _ocr_image(_preprocess_image(img)).strip()
+        with Image.open(str(p)) as source:
+            img = source.convert("RGB")
+    img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
+    prepared = _preprocess_image(img)
+    initial = _ocr_image(prepared).strip()
+    # Extra work only when the first orientation recovers fewer than two
+    # supported labels. This is a heuristic, not orientation certainty.
+    if len(extract_fields(initial)) >= 2:
+        return initial
+    candidates = [initial]
+    for angle in (90, 270):
+        candidates.append(_ocr_image(prepared.rotate(angle, expand=True)).strip())
+    return max(candidates, key=lambda text: (len(extract_fields(text)), len(text)))
+
 
 def extract_fields(text: str):
-    text = text or ""
-    fields = {}
-
-    patterns = {
-        "certificate_no": r"(certificate\s*(no|number|id)\s*[:\-]?\s*([A-Z0-9\-\/]+))",
-        "name": r"(name\s*[:\-]?\s*([A-Za-z ,.'-]{3,}))",
-        "date": r"(date\s*[:\-]?\s*([0-9A-Za-z,\-/ ]{4,}))",
-        "institution": r"(university|college|institute|academy|school|board|organization\s*[:\-]?\s*([A-Za-z0-9 ,.\-]{3,}))"
+    """Extract four explicitly labelled, single-line values; no inferred truth."""
+    labels = {
+        "certificate_no": r"certificate[ \t]*(?:no\.?|number|id)",
+        "name": r"name",
+        "date": r"date",
+        "institution": r"(?:institution|university|college|institute|academy|school|board|organization)",
     }
-
-    for key, pat in patterns.items():
-        m = re.search(pat, text, re.IGNORECASE)
-        if m:
-            fields[key] = m.group(m.lastindex).strip() if m.lastindex else m.group(0).strip()
-
+    fields = {}
+    for key, label in labels.items():
+        pattern = rf"^[ \t]*{label}[ \t]*[:\-][ \t]*([^\r\n]{{1,200}})"
+        match = re.search(pattern, text or "", re.IGNORECASE | re.MULTILINE)
+        if match:
+            fields[key] = match.group(1).strip()
     return fields

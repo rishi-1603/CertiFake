@@ -38,6 +38,7 @@ HANDLED or DUPLICATE, and raise on failure. Keeping the loop generic means
 a future third worker gets retry/DLQ/commit correctness for free rather
 than re-deriving it.
 """
+import hashlib
 import json
 import logging
 import random
@@ -75,6 +76,14 @@ def _backoff_seconds(attempt: int, base: float, cap: float) -> float:
     return random.uniform(0, exponential)
 
 
+def _commit_sync(consumer, message):
+    partitions = consumer.commit(message, asynchronous=False)
+    if partitions:
+        for partition in partitions:
+            if partition.error is not None:
+                raise RuntimeError("Kafka offset commit failed")
+
+
 def handle_one_message(
     consumer,
     producer,
@@ -99,24 +108,23 @@ def handle_one_message(
     """
     try:
         event = json.loads(raw_message.value().decode("utf-8"))
+        if not isinstance(event, dict):
+            raise ValueError("Event payload must be a JSON object")
     except (ValueError, UnicodeDecodeError, AttributeError) as exc:
         # Undecodable payload: retrying cannot possibly help, so go straight
-        # to the DLQ with the raw bytes rather than burning attempts. Still
-        # needs the original content preserved for inspection.
+        # to the DLQ with a digest and length rather than storing raw content.
         logger.error("Malformed message on topic=%s: %s", source_topic, exc)
-        raw = None
-        try:
-            raw = raw_message.value().decode("utf-8", errors="replace")
-        except Exception:  # noqa: BLE001 -- preserve whatever we can, never mask the DLQ decision
-            pass
+        raw = raw_message.value() or b""
+        if not isinstance(raw, bytes):
+            raw = b""
         ok = publish_to_dlq(
             producer, source_topic,
-            {"unparseable_payload": (raw or "")[:4000]},
+            {"unparseable_sha256": hashlib.sha256(raw).hexdigest(), "payload_bytes": len(raw)},
             exc, attempts=0,
         )
         outcome = "malformed_dead_lettered" if ok else "malformed_dead_letter_failed"
         if ok:
-            consumer.commit(raw_message)
+            _commit_sync(consumer, raw_message)
         return outcome
 
     last_error: Exception | None = None
@@ -128,8 +136,8 @@ def handle_one_message(
             last_error = exc
             worker_events_failed_total.labels(worker=worker_name).inc()
             logger.warning(
-                "Attempt %d/%d failed for worker=%s topic=%s: %s: %s",
-                attempt, max_attempts, worker_name, source_topic, type(exc).__name__, exc,
+                "Attempt %d/%d failed for worker=%s topic=%s: %s",
+                attempt, max_attempts, worker_name, source_topic, type(exc).__name__,
             )
             if attempt < max_attempts:
                 sleep(_backoff_seconds(attempt, backoff_base_seconds, backoff_cap_seconds))
@@ -138,30 +146,29 @@ def handle_one_message(
         if result == DUPLICATE:
             worker_duplicate_events_skipped_total.labels(worker=worker_name).inc()
             logger.info("Skipping already-completed stage (worker=%s) for event=%s", worker_name, event.get("analysis_id"))
-            consumer.commit(raw_message)
+            _commit_sync(consumer, raw_message)
             return "duplicate"
 
         worker_events_processed_total.labels(worker=worker_name).inc()
-        consumer.commit(raw_message)
+        _commit_sync(consumer, raw_message)
         return "handled"
 
     # Every attempt exhausted: dead-letter the original event.
     worker_events_dead_lettered_total.labels(worker=worker_name).inc()
+    dlq_ok = publish_to_dlq(producer, source_topic, event, last_error, attempts=max_attempts)
+    if not dlq_ok:
+        return "dead_letter_failed"
     if on_dead_letter is not None:
-        # Lets the worker persist a terminal state (e.g. mark the analysis
-        # row status=failed) exactly once, after retries are genuinely
-        # exhausted -- not on every individual attempt, which would flap the
-        # row between failed and analyzing while a transient error is still
-        # being retried.
         try:
             on_dead_letter(event, last_error, max_attempts)
-        except Exception as cb_exc:  # noqa: BLE001 -- a broken callback must not prevent dead-lettering
-            logger.error("on_dead_letter callback raised %s: %s", type(cb_exc).__name__, cb_exc)
-    dlq_ok = publish_to_dlq(producer, source_topic, event, last_error, attempts=max_attempts)
-    if dlq_ok:
-        consumer.commit(raw_message)
-        return "dead_lettered"
-    return "dead_letter_failed"
+        except Exception as cb_exc:
+            # A durable DLQ alone does not persist the user-facing terminal
+            # state. Do not advance the offset if that write failed; a retry
+            # may duplicate the DLQ message, which operators must deduplicate.
+            logger.error("Could not persist terminal state: %s", type(cb_exc).__name__)
+            return "dead_letter_failed"
+    _commit_sync(consumer, raw_message)
+    return "dead_lettered"
 
 
 def consume_loop(
@@ -198,7 +205,7 @@ def consume_loop(
             # message failures; log and keep polling rather than dying.
             logger.error("Consumer error on topic=%s: %s", source_topic, msg.error())
             continue
-        handle_one_message(
+        outcome = handle_one_message(
             consumer, producer, handler, msg,
             source_topic=source_topic,
             worker_name=worker_name,
@@ -208,3 +215,8 @@ def consume_loop(
             sleep=sleep,
             on_dead_letter=on_dead_letter,
         )
+
+        if outcome in ("dead_letter_failed", "malformed_dead_letter_failed"):
+            # Polling the next record and committing it could advance the partition
+            # beyond this uncommitted offset. Stop the process for broker redelivery.
+            raise RuntimeError("DLQ delivery failed; stopping with uncommitted offset")
