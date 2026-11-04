@@ -16,10 +16,8 @@ distributed pipeline behind it. Nothing else in this API (health, status
 polling, auth) does comparable downstream work, so nothing else is
 rate-limited here.
 
-Algorithm: fixed-window counter via Redis INCR + EXPIRE, the same approach
-already used in the sibling DevTrack project's app/utils/rate_limit.py --
-ported deliberately rather than inventing a second algorithm for an
-identical problem.
+Algorithm: fixed-window counter using atomic MULTI/EXEC with INCR and
+EXPIRE NX. Redis 7+ is required for the NX expiration option.
 
 Fails OPEN (allows the request) if Redis itself is unreachable. This is a
 security trade-off, not an oversight: CertiFake is a certificate-analysis
@@ -51,9 +49,12 @@ def check_rate_limit(key: str, limit: int, window_seconds: int) -> tuple[bool, i
     try:
         client = _get_client()
         redis_key = f"ratelimit:{key}"
-        current = client.incr(redis_key)
-        if current == 1:
-            client.expire(redis_key, window_seconds)
+        # Atomic MULTI/EXEC prevents interruption between increment and expiry.
+        # NX preserves the original window and repairs keys with missing TTLs.
+        with client.pipeline(transaction=True) as pipe:
+            pipe.incr(redis_key)
+            pipe.expire(redis_key, window_seconds, nx=True)
+            current, _ = pipe.execute()
         if current > limit:
             ttl = client.ttl(redis_key)
             return False, max(ttl, 1)

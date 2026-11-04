@@ -13,15 +13,16 @@ and assert the expensive side effects do NOT happen on a duplicate.
 import app.workers.forensics as forensics_worker
 import app.workers.ocr as ocr_worker
 from app.consumer import DUPLICATE
-from app.models import CertificateAnalysis, SessionLocal
+from app.models import CertificateAnalysis, SessionLocal, User
 
 
 def _make_analysis(**kwargs):
     db = SessionLocal()
     try:
+        db.add(User(id="u", email="owner@example.com", password_hash="unused"))
         row = CertificateAnalysis(
             id=kwargs.pop("id", "idem-1"),
-            user_id=None,
+            user_id="u",
             filename="cert.png",
             content_type="image/png",
             status=kwargs.pop("status", "analyzing"),

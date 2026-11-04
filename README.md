@@ -92,7 +92,7 @@ The unit/API suite uses SQLite and fakes; it does not prove a distributed stack.
 
 No issuer verification, ground-truth fraud dataset, calibrated confidence, malware scanner, production threat assessment, login throttling, refresh tokens, reprocessing UI, migration framework or storage reconciliation. Import-time schema creation is not migrations. The upload read cap does not replace a reverse-proxy body limit or worker sandbox. Full PDF processing and resource isolation need further hardening. No p95/p99 or throughput figures have been measured.
 
-[Audit](docs/PROJECT_AUDIT.md) · [Seven-day roadmap](docs/UPGRADE_ROADMAP.md) · [Security](docs/SECURITY.md) · [Forensics](docs/FORENSIC_ENGINE.md) · [Operations](docs/OBSERVABILITY.md) · [Interview notes](docs/INTERVIEW_PREP.md)
+[Original audit](docs/PROJECT_AUDIT.md) · [Day 1 audit](docs/DAY_1_AUDIT_REPORT.md) · [Seven-day roadmap](docs/UPGRADE_ROADMAP.md) · [Security](docs/SECURITY.md) · [Forensics](docs/FORENSIC_ENGINE.md) · [Operations](docs/OBSERVABILITY.md) · [Interview notes](docs/INTERVIEW_PREP.md)
 
 ## Kubernetes manifests (unverified)
 

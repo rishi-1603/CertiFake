@@ -4,7 +4,7 @@ This is a prioritized seven-workday plan, not a claim of seven days of elapsed w
 
 | Day | Goal | Acceptance evidence |
 |---|---|---|
-| 1 | Inventory, baseline, model the critical failure windows | Audit with source references; baseline tests; real-service environment feasibility and backlog. |
+| 1 | Inventory, baseline, model critical failure windows — **COMPLETE** | [Day 1 audit](DAY_1_AUDIT_REPORT.md), baseline and targeted security/reliability regressions; exact-commit CI and deployment verified separately. |
 | 2 | Harden upload, authentication boundary and forensic semantics | Bounded upload/decode, deterministic validation tests, no unsupported authenticity/confidence claim; document remaining gaps. |
 | 3 | Make DB-to-broker handoff recoverable | Atomic outbox writes for API and OCR transitions; dispatcher locking, retries, restart and duplicate-publish tests; document at-least-once limits. |
 | 4 | Harden consumers and processing | Safe offset decisions, DLQ and retries, idempotent stages, OCR time and PDF page limits, field-extraction regression tests. |

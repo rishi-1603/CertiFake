@@ -52,7 +52,7 @@ def test_rate_limit_fails_open_when_redis_is_unreachable(client, auth_headers, m
     except redis.RedisError branch, not just the happy path."""
 
     class BrokenClient:
-        def incr(self, *a, **kw):
+        def pipeline(self, *a, **kw):
             raise redis.ConnectionError("simulated outage")
 
     monkeypatch.setattr(rate_limit_module, "_client", BrokenClient())
@@ -69,3 +69,18 @@ def test_other_endpoints_are_not_rate_limited(client, auth_headers):
     for _ in range(settings.analyze_rate_limit_per_minute + 5):
         resp = client.get("/auth/me", headers=headers)
         assert resp.status_code == 200
+
+
+def test_preexisting_key_without_ttl_is_repaired(_fake_redis):
+    _fake_redis.set('ratelimit:orphan', 99)
+    assert _fake_redis.ttl('ratelimit:orphan') == -1
+    allowed, retry = rate_limit_module.check_rate_limit('orphan', limit=10, window_seconds=60)
+    assert not allowed and 1 <= retry <= 60
+    assert 0 < _fake_redis.ttl('ratelimit:orphan') <= 60
+
+
+def test_subsequent_requests_do_not_extend_window(_fake_redis):
+    rate_limit_module.check_rate_limit('stable-window', limit=10, window_seconds=60)
+    _fake_redis.expire('ratelimit:stable-window', 5)
+    rate_limit_module.check_rate_limit('stable-window', limit=10, window_seconds=60)
+    assert 0 < _fake_redis.ttl('ratelimit:stable-window') <= 5

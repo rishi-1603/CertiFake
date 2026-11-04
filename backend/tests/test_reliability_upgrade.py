@@ -1,5 +1,5 @@
 """Targeted failure windows; mocked clients are not real Kafka integration tests."""
-from app.models import CertificateAnalysis, SessionLocal
+from app.models import CertificateAnalysis, SessionLocal, User
 from app.workers import ocr as worker
 
 
@@ -7,7 +7,8 @@ def test_ocr_result_and_outbox_are_committed_together(monkeypatch):
     from app.models import OutboxEvent
     db = SessionLocal()
     try:
-        db.add(CertificateAnalysis(id='outbox-ocr', user_id=None, filename='x.png',
+        db.add(User(id='u', email='ocr-owner@example.com', password_hash='unused'))
+        db.add(CertificateAnalysis(id='outbox-ocr', user_id='u', filename='x.png',
                                    content_type='image/png', status='analyzing'))
         db.commit()
     finally:
@@ -118,7 +119,8 @@ def test_ocr_db_failure_rolls_back_result_and_outbox(monkeypatch):
     from app.models import OutboxEvent
     db = SessionLocal()
     try:
-        db.add(CertificateAnalysis(id='rollback-ocr', user_id=None, filename='x.png',
+        db.add(User(id='u', email='rollback-owner@example.com', password_hash='unused'))
+        db.add(CertificateAnalysis(id='rollback-ocr', user_id='u', filename='x.png',
                                    content_type='image/png', status='analyzing'))
         db.commit()
     finally:
@@ -136,7 +138,7 @@ def test_ocr_db_failure_rolls_back_result_and_outbox(monkeypatch):
     monkeypatch.setattr(worker, 'SessionLocal', failing_session)
     import pytest
     with pytest.raises(RuntimeError, match='injected'):
-        worker.process_ocr({'analysis_id': 'rollback-ocr', 'file_key': 'u/rollback/x.png', 'content_type': 'image/png'})
+        worker.process_ocr({'analysis_id': 'rollback-ocr', 'file_key': 'u/rollback-ocr/x.png', 'content_type': 'image/png'})
     db = SessionLocal()
     try:
         assert db.query(CertificateAnalysis).filter_by(id='rollback-ocr').one().ocr_text is None
@@ -162,3 +164,162 @@ def test_ocr_retries_rotations_when_first_pass_has_few_fields(tmp_path, monkeypa
     assert text.startswith('Name: Jane')
     assert len(calls) == 3
     assert calls[0] == (120, 80) and calls[1] == (80, 120)
+
+
+def test_forged_event_cannot_point_ocr_at_another_owners_object(monkeypatch):
+    import pytest
+    db = SessionLocal()
+    try:
+        db.add(User(id='owner-a', email='owner-a@example.com', password_hash='unused'))
+        db.add(CertificateAnalysis(id='safe-analysis', user_id='owner-a', filename='cert.png',
+                                   content_type='image/png', status='analyzing'))
+        db.commit()
+    finally:
+        db.close()
+    calls = []
+    monkeypatch.setattr(worker, 'download_file_bytes', lambda key: calls.append(key) or b'data')
+    with pytest.raises(ValueError, match='[Ee]vent'):
+        worker.process_ocr({'analysis_id': 'safe-analysis', 'file_key': 'owner-b/other/original.png',
+                            'content_type': 'image/png'})
+    assert calls == []
+
+
+def test_forged_event_cannot_point_forensics_at_another_owners_object(monkeypatch):
+    import pytest
+
+    from app.workers import forensics
+    db = SessionLocal()
+    try:
+        db.add(User(id='owner-a', email='owner-a@example.com', password_hash='unused'))
+        db.add(CertificateAnalysis(id='safe-analysis', user_id='owner-a', filename='cert.png',
+                                   content_type='image/png', status='analyzing', ocr_text='Name: Jane'))
+        db.commit()
+    finally:
+        db.close()
+    calls = []
+    monkeypatch.setattr(forensics, 'download_file_bytes', lambda key: calls.append(key) or b'data')
+    with pytest.raises(ValueError, match='[Ee]vent'):
+        forensics.process_forensics({'analysis_id': 'safe-analysis', 'file_key': 'owner-b/other/original.png',
+                                     'content_type': 'image/png'})
+    assert calls == []
+
+
+def test_invalid_event_does_not_mark_victim_as_failed():
+    from app.event_validation import InvalidEventError
+    from app.workers import forensics
+    db = SessionLocal()
+    try:
+        db.add(User(id='u', email='victim@example.com', password_hash='unused'))
+        db.add(CertificateAnalysis(id='victim', user_id='u', filename='x.png',
+                                   content_type='image/png', status='analyzing'))
+        db.commit()
+    finally:
+        db.close()
+    worker._mark_failed('victim', InvalidEventError('invalid event'))
+    forensics._mark_failed('victim', InvalidEventError('invalid event'))
+    db = SessionLocal()
+    try:
+        assert db.query(CertificateAnalysis).filter_by(id='victim').one().status == 'analyzing'
+    finally:
+        db.close()
+
+
+def test_valid_generated_and_legacy_object_keys_are_accepted():
+    from types import SimpleNamespace
+
+    import pytest
+
+    from app.event_validation import InvalidEventError, validate_document_reference
+    row = SimpleNamespace(id='a1', user_id='user1', filename='certificate.png', content_type='image/png')
+    validate_document_reference(row, 'a1', 'user1/a1/original.png', 'image/png')
+    validate_document_reference(row, 'a1', 'user1/a1/certificate.png', 'image/png')
+    with pytest.raises(InvalidEventError):
+        validate_document_reference(row, 'a1', 'user1/a1/../other.png', 'image/png')
+    with pytest.raises(InvalidEventError):
+        validate_document_reference(row, 'a1', 'user1/a1/original.png', 'application/pdf')
+
+
+def test_outbox_bound_analysis_rejects_a_forged_same_owner_reference(monkeypatch):
+    import pytest
+
+    from app.models import OutboxEvent
+    db = SessionLocal()
+    try:
+        db.add(User(id='u', email='queue@example.com', password_hash='unused'))
+        db.add(CertificateAnalysis(id='bound', user_id='u', filename='cert.png',
+                                   content_type='image/png', status='analyzing'))
+        db.add(OutboxEvent(analysis_id='bound', topic='certificate_uploaded',
+            payload={'analysis_id': 'bound', 'file_key': 'u/bound/original.png', 'content_type': 'image/png'}))
+        db.commit()
+    finally:
+        db.close()
+    calls = []
+    monkeypatch.setattr(worker, 'download_file_bytes', lambda key: calls.append(key) or b'data')
+    with pytest.raises(ValueError, match='[Ee]vent'):
+        worker.process_ocr({'analysis_id': 'bound', 'file_key': 'u/bound/cert.png', 'content_type': 'image/png'})
+    assert not calls
+
+
+def test_outbox_bound_matching_event_is_processed(monkeypatch):
+    from app.models import OutboxEvent
+    db = SessionLocal()
+    try:
+        db.add(User(id='u', email='matching@example.com', password_hash='unused'))
+        db.add(CertificateAnalysis(id='bound', user_id='u', filename='cert.png',
+                                   content_type='image/png', status='analyzing'))
+        event = {'analysis_id': 'bound', 'file_key': 'u/bound/original.png', 'content_type': 'image/png'}
+        db.add(OutboxEvent(analysis_id='bound', topic='certificate_uploaded', payload=event))
+        db.commit()
+    finally:
+        db.close()
+    monkeypatch.setattr(worker, 'download_file_bytes', lambda _: b'data')
+    monkeypatch.setattr(worker, 'run_ocr', lambda *_: 'Name: Jane')
+    monkeypatch.setattr(worker, 'extract_fields', lambda _: {'name': 'Jane'})
+    assert worker.process_ocr(event) == 'handled'
+    db = SessionLocal()
+    try:
+        assert db.query(OutboxEvent).filter_by(analysis_id='bound', topic='ocr_completed').count() == 1
+    finally:
+        db.close()
+
+
+def test_invalid_missing_reference_never_sets_terminal_failure():
+    import pytest
+
+    from app.event_validation import InvalidEventError
+    db = SessionLocal()
+    try:
+        db.add(User(id='u', email='missing@example.com', password_hash='unused'))
+        db.add(CertificateAnalysis(id='victim', user_id='u', filename='x.png',
+                                   content_type='image/png', status='analyzing'))
+        db.commit()
+    finally:
+        db.close()
+    with pytest.raises(InvalidEventError) as caught:
+        worker.process_ocr({'analysis_id': 'victim', 'content_type': 'image/png'})
+    worker._mark_failed('victim', caught.value)
+    db = SessionLocal()
+    try:
+        assert db.query(CertificateAnalysis).filter_by(id='victim').one().status == 'analyzing'
+    finally:
+        db.close()
+
+
+def test_outbox_bound_forensic_event_requires_committed_stage(monkeypatch):
+    import pytest
+
+    from app.models import OutboxEvent
+    from app.workers import forensics
+    db = SessionLocal()
+    try:
+        db.add(User(id='u', email='stage@example.com', password_hash='unused'))
+        db.add(CertificateAnalysis(id='stage', user_id='u', filename='cert.png',
+                                   content_type='image/png', status='analyzing', ocr_text='Name: Jane'))
+        event = {'analysis_id': 'stage', 'file_key': 'u/stage/original.png', 'content_type': 'image/png'}
+        db.add(OutboxEvent(analysis_id='stage', topic='certificate_uploaded', payload=event))
+        db.commit()
+    finally:
+        db.close()
+    monkeypatch.setattr(forensics, 'download_file_bytes', lambda _: pytest.fail('storage must not be read'))
+    with pytest.raises(ValueError, match='[Ee]vent'):
+        forensics.process_forensics(event)

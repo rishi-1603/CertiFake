@@ -8,6 +8,12 @@ import os
 import tempfile
 
 from app.consumer import DUPLICATE, HANDLED, consume_loop
+from app.event_validation import (
+    InvalidEventError,
+    parse_document_event,
+    validate_document_reference,
+    validate_queued_reference,
+)
 from app.forensics import heatmap_b64, score_document
 from app.kafka_utils import get_kafka_consumer, get_kafka_producer
 from app.models import CertificateAnalysis, OutboxEvent, SessionLocal
@@ -27,7 +33,7 @@ def _mark_failed(analysis_id: str, error: Exception | None) -> None:
     on the row (no such column, and no migration tooling to add one safely)
     and where it lives instead (the dead-letter envelope).
     """
-    if not analysis_id:
+    if not analysis_id or isinstance(error, InvalidEventError):
         return
     db = SessionLocal()
     try:
@@ -41,9 +47,7 @@ def _mark_failed(analysis_id: str, error: Exception | None) -> None:
 
 def process_forensics(event: dict) -> str:
     """Handle one `ocr_completed` event. Returns HANDLED or DUPLICATE; raises on failure."""
-    analysis_id = event["analysis_id"]
-    file_key = event["file_key"]
-    content_type = event["content_type"]
+    analysis_id, file_key, content_type = parse_document_event(event)
 
     db = SessionLocal()
     tmp_path = None
@@ -57,6 +61,8 @@ def process_forensics(event: dict) -> str:
         # Idempotency: at-least-once delivery can redeliver this event after
         # a crash between publishing analysis_completed and committing the
         # offset. "completed" means this stage already ran to completion.
+        validate_document_reference(analysis, analysis_id, file_key, content_type)
+        validate_queued_reference(db, SOURCE_TOPIC, analysis_id, file_key, content_type)
         if analysis.status == "completed":
             return DUPLICATE
         # Read the committed OCR result; the event does not need document text.

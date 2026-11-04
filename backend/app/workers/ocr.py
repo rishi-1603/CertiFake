@@ -8,6 +8,12 @@ import os
 import tempfile
 
 from app.consumer import DUPLICATE, HANDLED, consume_loop
+from app.event_validation import (
+    InvalidEventError,
+    parse_document_event,
+    validate_document_reference,
+    validate_queued_reference,
+)
 from app.kafka_utils import get_kafka_consumer, get_kafka_producer
 from app.models import CertificateAnalysis, OutboxEvent, SessionLocal
 from app.ocr import extract_fields, run_ocr
@@ -34,7 +40,7 @@ def _mark_failed(analysis_id: str, error: Exception | None) -> None:
     place for it anyway: the row is for client-facing status, the DLQ is for
     operator-facing diagnosis and replay.
     """
-    if not analysis_id:
+    if not analysis_id or isinstance(error, InvalidEventError):
         return
     db = SessionLocal()
     try:
@@ -54,9 +60,7 @@ def process_ocr(event: dict) -> str:
     and marked the row failed immediately, which made a transient MinIO or
     database blip permanently fatal to that certificate.
     """
-    analysis_id = event["analysis_id"]
-    file_key = event["file_key"]
-    content_type = event["content_type"]
+    analysis_id, file_key, content_type = parse_document_event(event)
 
     db = SessionLocal()
     tmp_path = None
@@ -70,6 +74,8 @@ def process_ocr(event: dict) -> str:
 
         # DB row lock serializes overlapping deliveries on PostgreSQL.
         # Non-None text means this stage and its outbox insert committed.
+        validate_document_reference(analysis, analysis_id, file_key, content_type)
+        validate_queued_reference(db, SOURCE_TOPIC, analysis_id, file_key, content_type)
         if analysis.ocr_text is not None:
             return DUPLICATE
 
